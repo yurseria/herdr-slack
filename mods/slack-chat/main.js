@@ -42,7 +42,7 @@ import { ChatAttention } from "./attention.js";
 import { IdentifyFeedback, identifyKey } from "./identify.js";
 import { Outbox, outboxScope } from "./outbox.js";
 import { herdr, chatTab, away, hide, show, switchView } from "./backstage.js";
-import { messageRow, authorOf, typingLine, slackTyping, dateDivider, dayKey, clock, dayLabel, programFace, userFace, shimmerText, SHIMMER_SWEEP_MS } from "./discord-look.js";
+import { messageRow, authorOf, typingLine, slackTyping, dateDivider, dayKey, clock, dayLabel, programFace, userFace, shimmerText, SHIMMER_SWEEP_MS } from "./look.js";
 import { threadify, lastAt, replyQuestion, mainStart, mainCount } from "./threads.js";
 import { quickFeed } from "./flockfeed.js";
 import { withoutEnter } from "./enter.js";
@@ -354,7 +354,7 @@ export default class Chat extends View {
     this.threadW = Number(localStorage.getItem("threadW")) || null;
     this.threadDrag = null;
     // The loading glow sweeps one way: start it again each sweep, only while the agent works and
-    // the chat shows (discord-look.js shimmerBox).
+    // the chat shows (look.js shimmerBox).
     this.shimmerGen = 0;
     this.shimmerRunning = false;
     cx.timer.every(SHIMMER_SWEEP_MS, (cx) => {

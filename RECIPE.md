@@ -208,7 +208,7 @@ starts again from the left. It moves only while the agent works and the chat is 
     pictures. `preview.png` was taken this way.
   - Lucide icons as svg; Lato fonts in `fonts/` (SIL OFL).
 - `mods/slack-chat`: the conversation, from Herdr Chat Plus (MIT, see its `LICENSE` and `NOTICE.md`).
-  The Slack parts: `discord-look.js` (message rows, date pills, typing line, glow), `threads.js`,
+  The Slack parts: `look.js` (message rows, date pills, typing line, glow), `threads.js`,
   `flockfeed.js` and `bin/flockbook-modfeed` (Flockbook's sidecar, MIT), `enter.js` (Flockbook's
   `withoutEnter`: drops the line break Enter puts at the cursor before a send), and changes in `main.js`,
   `parse.js` (message times) and `session.js` (new Codex logs).
