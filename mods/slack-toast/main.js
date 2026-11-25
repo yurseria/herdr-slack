@@ -1,15 +1,34 @@
 // Slack 레이아웃의 알림. Herdr 는 알림을 늘 오른쪽 아래에 띄우므로, 그 자리에 열리면 곧바로
-// 오른쪽 위(채널 머리줄 아래)에 창으로 다시 열고 원래 것은 닫는다. 창 너비는 위 띠가 남긴
-// shared "slack.windowW" 로 안다. 누르면 할 일(그 에이전트로 가기)을 하고 닫힌다.
+// 채팅 칸의 오른쪽 위(채널 머리줄 아래)에 창으로 다시 열고 원래 것은 닫는다. 창 너비는 위 띠가 남긴
+// shared "slack.windowW" 로 알고, 오른쪽 파일 패널(layout 의 "panel")이 열려 있으면 그 폭만큼 왼쪽으로
+// 비켜서 패널의 탭을 가리지 않는다. 누르면 할 일(그 에이전트로 가기)을 하고 닫힌다.
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, closeOverlay, openOverlay, run, theme, shared, checking } from "herdr";
+import { props, closeOverlay, openOverlay, run, theme, shared, checking, layout, settings } from "herdr";
 
 const WIDTH = 360;
 const HEIGHT = 72;
 const MARGIN = 16;
 const TOP = 104;          // 위 띠(44) + 채널 머리줄 윗줄(52) 아래
 const DEFAULT_MS = 6000;
+const PAD_RIGHT = 6;      // 레이아웃 오른쪽 여백(pad-right)
+
+function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+// 채팅 칸의 오른쪽 끝(창 왼쪽에서 잰 px): 창 오른쪽 여백과, 열려 있으면 파일 패널 폭을 뺀다.
+function chatRight(windowW) {
+  const panel = findNode(layout(), "panel");
+  const zoom = settings()?.zoom ?? 1;
+  const panelW = panel && !panel.hidden && Number.isFinite(panel.size?.px) ? panel.size.px * zoom : 0;
+  return windowW - PAD_RIGHT * zoom - panelW;
+}
 const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
 
 // 제목 글자: 다크에선 흰색(ansi15), 라이트 테마(밝은 바탕)에선 본문색. ansi15 는 라이트 터미널에서 회색이다.
@@ -29,7 +48,7 @@ export default class SlackToast extends View {
       const w = shared("slack.windowW") ?? 1200;
       const { overlay, ...rest } = p;
       openOverlay({ mod: "slack-toast", kind: "window", key: "slack-toast", frame: "none", width: WIDTH, height: HEIGHT,
-        at: { x: Math.max(MARGIN, w - WIDTH - MARGIN), y: TOP }, props: { ...rest, placed: true } });
+        at: { x: Math.max(MARGIN, chatRight(w) - WIDTH - MARGIN), y: TOP }, props: { ...rest, placed: true } });
       closeOverlay(overlay);
       return;
     }

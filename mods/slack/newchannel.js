@@ -5,7 +5,7 @@
 // 이 레이아웃에서는 에이전트 채널이 열리면 메시지(채팅) 보기로 연다(chatview.js).
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Popup, ScrollHandle } from "gpui-base";
-import { props, spaces, panes, home, knownAgents, pickFolder, run, exec, closeOverlay, notify, shared, setShared } from "herdr";
+import { props, spaces, panes, home, appHome, knownAgents, pickFolder, run, exec, readTextFile, closeOverlay, notify, shared, setShared } from "herdr";
 import * as fs from "fs/promises";
 import { strong, icon } from "./parts.js";
 import { nameFromMessage } from "./look.js";
@@ -41,7 +41,8 @@ export function matchDirs(dirs, query) {
 
 const TERMINAL = { key: "terminal", name: "터미널", run: null };
 
-export const newChannelOverlay = (scope = "tab") => ({ mod: "slack", kind: "dialog", width: 520, height: 476, props: { view: "new-channel", scope } });
+// folder: 작업 폴더를 미리 채워 연다(프로젝트 섹션의 + 버튼).
+export const newChannelOverlay = (scope = "tab", folder = null) => ({ mod: "slack", kind: "dialog", width: 520, height: 510, props: { view: "new-channel", scope, ...(folder ? { folder } : {}) } });
 
 const tilde = (path) => {
   const h = home();
@@ -75,15 +76,70 @@ function generalSpace() {
   return found ?? null;
 }
 
+// ---- 새 worktree (기본 worktree 모드와 같은 자리·이름 규칙) ----
+// <settings.worktrees.directory 또는 ~/.herdr/worktrees>/<저장소>/<브랜치(기호는 -)>
+async function worktreeHome() {
+  const raw = await readTextFile(`${appHome()}/settings.json`).catch(() => null);
+  let dir = "~/.herdr/worktrees";
+  try { dir = JSON.parse(raw ?? "{}")?.worktrees?.directory || dir; } catch {}
+  return (dir === "~" || dir.startsWith("~/") ? `${home()}${dir.slice(1)}` : dir).replace(/\/+$/, "");
+}
+const branchSlug = (branch) => branch.normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "") || "branch";
+// 채널 이름 → 브랜치 이름(띄어쓰기는 -).
+export const branchFromName = (name) => name.trim().replace(/\s+/g, "-");
+
+async function git(cwd, args, timeout = 30000) {
+  const r = await exec("git", args, { cwd, timeout }).catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+  return { ok: r.code === 0, out: (r.stdout ?? "").trim(), err: (r.stderr || r.stdout || "").trim() };
+}
+
+// folder 의 저장소에 branch worktree 를 만들고 그 경로를 돌려준다. 실패하면 Error.
+async function addWorktree(folder, branch) {
+  const top = await git(folder, ["rev-parse", "--show-toplevel"]);
+  if (!top.ok) throw new Error("작업 폴더가 git 저장소가 아니에요");
+  const common = await git(folder, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const mainRepo = common.ok ? common.out.replace(/\/\.git\/?$/, "") : top.out;
+  const repoName = mainRepo.split("/").pop();
+  if (!(await git(folder, ["check-ref-format", "--branch", branch])).ok) throw new Error(`브랜치 이름으로 쓸 수 없어요: ${branch}`);
+  const path = `${await worktreeHome()}/${repoName}/${branchSlug(branch)}`;
+  if (await fs.exists(path).catch(() => false)) throw new Error(`이미 있는 폴더예요: ${tilde(path)}`);
+  const exists = (await git(top.out, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).ok;
+  const r = await git(top.out, exists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, "HEAD"], 600000);
+  if (!r.ok) throw new Error(r.err || "git worktree add 실패");
+  return path;
+}
+
+// 폴더가 속한 worktree 의 루트(git 이 아니면 폴더 그대로).
+async function worktreeRoot(folder) {
+  const r = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, timeout: 5000 }).catch(() => null);
+  return r && r.code === 0 && r.stdout.trim() ? r.stdout.trim() : folder.replace(/\/+$/, "");
+}
+
+// 같은 worktree 에 있는 이 컴퓨터의 채널(스페이스). 폴더가 그 루트 안에 있는 채널만 git 에 다시 묻는다
+// (루트 안에 다른 worktree 가 들어 있을 수 있어서 접두어만으로는 정하지 않는다).
+async function channelOfWorktree(folder) {
+  const root = await worktreeRoot(folder);
+  for (const s of spaces()) {
+    if (s.machine || !s.folder) continue;
+    if (s.folder !== root && !s.folder.startsWith(`${root}/`)) continue;
+    if ((await worktreeRoot(s.folder)) === root) return s;
+  }
+  return null;
+}
+
 export function initNewChannel(view, cx) {
   view.agents = null; // 불러오는 중
   view.choice = null;
   // 비워 두면 지금 채널의 폴더에서 시작한다(placeholder 가 그 폴더를 알려 준다).
   view.defaultFolder = currentFolder();
-  view.folderInput = InputState.new({ placeholder: props()?.scope === "space"
+  const given = props()?.folder ?? null;
+  view.folderInput = InputState.new({ ...(given ? { value: tilde(given) } : {}), placeholder: props()?.scope === "space"
     ? "폴더 검색 또는 경로 입력 · 비우면 #일반 채널에 탭으로 추가"
     : `폴더 검색 또는 경로 입력 · 비우면 ${tilde(view.defaultFolder)}` });
-  view.nameInput = InputState.new({ placeholder: "비우면 작업 폴더 이름으로 보여요" });
+  view.nameInput = InputState.new({ placeholder: props()?.scope === "space" ? "비우면 브랜치 이름으로 보여요" : "비우면 세션 제목으로 보여요" });
+  view.makeWorktree = false;
+  // 이름을 적어야 '새 worktree 생성'을 고를 수 있다(이름이 곧 브랜치).
+  view.nameInput.on("change", (_e, cx2) => { if (!view.nameInput.value().trim()) view.makeWorktree = false; cx2.notify(); });
   view.dirs = [];
   view.dirScroll = ScrollHandle.new();
   view.dirOpen = false;
@@ -112,9 +168,10 @@ export function initNewChannel(view, cx) {
   };
   view.nameInput.on("submit", (_e, cx2) => view.create(cx2));
   // 첫 메시지: 에이전트에게 바로 보내고, 이름을 비우면 이 문장(첫 줄, 40자)이 채널·탭 이름이 된다.
-  view.taskInput = InputState.new({ placeholder: "에이전트에게 바로 보낼 말 · 비우면 세션 제목이 이름이 돼요" });
+  view.taskInput = InputState.new({ placeholder: "에이전트에게 바로 보낼 말" });
   view.taskInput.on("submit", (_e, cx2) => view.create(cx2));
-  view.folderInput.focus();
+  // 폴더를 미리 채워 열었으면 바로 첫 메시지를 쓰게 한다.
+  if (given) view.taskInput.focus(); else view.folderInput.focus();
   // cx 는 부른 쪽(클릭·Enter)의 것을 받는다(init 의 cx 를 붙잡아 두지 않는다).
   view.create = (cx) => {
     if (view.creating) return;
@@ -123,7 +180,10 @@ export function initNewChannel(view, cx) {
     const toGeneral = props()?.scope === "space" && !typed;
     const folder = typed ? expand(typed) : toGeneral ? home() : view.defaultFolder;
     const task = view.taskInput.value().trim();
-    const name = view.nameInput.value().trim() || nameFromMessage(task);
+    const typedName = view.nameInput.value().trim();
+    // 새 채널은 이름을 비우면 이름 없이 둔다(브랜치 이름을 따른다). 탭(#일반에 넣는 탭 포함)은 첫 메시지로 이름을 짓는다.
+    const name = typedName || (props()?.scope === "space" && typed ? "" : nameFromMessage(task));
+    const worktree = props()?.scope === "space" && view.makeWorktree && Boolean(typedName);
     const agent = view.choice ?? TERMINAL;
     const space = spaces().find((s) => s.active);
     view.creating = true;
@@ -137,6 +197,19 @@ export function initNewChannel(view, cx) {
         return;
       }
       const argv = agent.run ? { argv: agent.run, ...(task ? { task } : {}) } : {};
+      if (worktree) {
+        // 새 worktree: 이름(= 브랜치)으로 만들고 그 폴더를 작업 폴더로 하는 새 채널. 이름은 붙이지 않는다(브랜치를 따른다).
+        try {
+          const path = await addWorktree(typed ? folder : view.defaultFolder, branchFromName(typedName));
+          run("space.new", { folder: path, ...argv });
+          closeOverlay(props()?.overlay);
+        } catch (error) {
+          notify({ title: "worktree 를 만들지 못했어요", body: String(error?.message ?? error), level: "error" });
+          view.creating = false;
+          cx2.notify();
+        }
+        return;
+      }
       const general = toGeneral ? generalSpace() : null;
       if (toGeneral && general) {
         run("tab.new", { space: general.id, folder, ...argv, ...(name ? { name } : {}) });
@@ -144,7 +217,14 @@ export function initNewChannel(view, cx) {
       } else if (toGeneral) {
         // #일반이 아직 없으면 홈 폴더에 '일반'이라는 이름으로 만든다(다음부터는 이름으로 찾아 기억한다).
         run("space.new", { folder, name: GENERAL_NAME, ...argv, ...(name ? { tab: name } : {}) });
-      } else if (props()?.scope === "space") run("space.new", { folder, ...argv, ...(name ? { name } : {}) });
+      } else if (props()?.scope === "space") {
+        // 채널 = worktree: 같은 worktree 의 채널이 이미 있으면 새 채널 대신 그 채널에 탭으로 넣는다.
+        const same = await channelOfWorktree(folder);
+        if (same) {
+          run("tab.new", { space: same.id, folder, ...argv, ...(name ? { name } : {}) });
+          run("space.select", { id: same.id });
+        } else run("space.new", { folder, ...argv, ...(name ? { name } : {}) });
+      }
       else run("tab.new", { ...(space ? { space: space.id } : {}), folder, ...argv, ...(name ? { name } : {}) });
       closeOverlay(props()?.overlay);
     });
@@ -203,6 +283,20 @@ function dirDropdown(view, t, list) {
     }));
 }
 
+// '새 worktree 생성': 채널 이름을 적었을 때만 고를 수 있다.
+function worktreeCheck(view, t) {
+  const name = view.nameInput.value().trim();
+  const on = view.makeWorktree && Boolean(name);
+  return h_flex().id("nc-worktree").pt(8).gap(8).items_center().flex_none()
+    .when(!name, (el) => el.opacity(0.45))
+    .when(Boolean(name), (el) => el.cursor_pointer().on_click((_e, cx) => { view.makeWorktree = !view.makeWorktree; cx.notify(); }))
+    .child(div().size(16).flex_none().rounded(4).flex().items_center().justify_center()
+      .border_1().border_color(on ? t.accent : t.input).bg(on ? t.accent : "#00000000")
+      .text_size(11).text_color(t.accent_foreground).child(on ? "✓" : ""))
+    .child(div().text_size(13).text_color(t.foreground).child("새 worktree 생성"))
+    .when(on, (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(`브랜치 ${branchFromName(name)}`)));
+}
+
 export function renderNewChannel(view, t) {
   const p = props() ?? {};
   const close = () => closeOverlay(p.overlay);
@@ -239,12 +333,13 @@ export function renderNewChannel(view, t) {
       .when(view.agents === null, (el) => el.child(div().h(34).flex().items_center().text_size(13).text_color(t.dim).child("설치된 에이전트를 찾는 중…")))
       .children((view.agents ?? []).map(chip))
       .child(chip(TERMINAL)))
-    .child(label("작업 폴더"))
+    .child(label("작업 폴더 (선택)"))
     .child(h_flex().flex_none().gap(8).items_center()
       .child(div().flex_1().min_w(0).child(folderField(view, t, field(view.folderInput))))
       .child(button("pick-folder", "폴더 고르기…", false, (_e, cx) => view.pickFolder(cx)).h(36)))
-    .child(label(p.scope === "space" ? "채널 이름 (선택, 비우면 첫 메시지 → 브랜치 → 세션 제목)" : "탭 이름 (선택, 비우면 세션 제목)"))
+    .child(label(p.scope === "space" ? "채널 이름 (선택)" : "탭 이름 (선택)"))
     .child(field(view.nameInput))
+    .when(p.scope === "space", (el) => el.child(worktreeCheck(view, t)))
     .child(label("첫 메시지 (선택)"))
     .child(field(view.taskInput))
     .child(div().flex_1())

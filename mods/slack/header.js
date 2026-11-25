@@ -106,7 +106,8 @@ export function renderHeader(view, t) {
           .text_color(t.muted).hover((s) => s.bg(t.raised).text_color(strong(t))).tooltip("이 채널의 에이전트")
           .on_click(() => run("mod.open", { name: "picker" }))
           .child(icon("users", 17)).child(div().text_size(14).child(String(agents().filter((a) => a.space === space?.id).length))))
-        .child(toolButton(t, "split", "split", "오른쪽으로 나누기 (⌘D)", false, () => run("pane.split", { direction: "right" })))
+        // 채팅 화면은 한 대화를 크게 보여 주는 페이지라 나눌 것이 없다(누르면 뒤에 숨은 터미널 탭만 나뉜다).
+        .when(!chat, (el) => el.child(toolButton(t, "split", "split", "오른쪽으로 나누기 (⌘D)", false, () => run("pane.split", { direction: "right" }))))
         .child(toolButton(t, "find", "search", "찾기 (⌘P)", false, () => run("mod.open", { name: "picker" })))
         .child(toolButton(t, "more", "more-vertical", "채널 메뉴", false, () => space && openOverlay(channelMenuOverlay(space.id, null))))))
     .child(h_flex().id("session-tabs").flex_1().min_w(0).px(20).gap(18).items_end().overflow_x_scroll()

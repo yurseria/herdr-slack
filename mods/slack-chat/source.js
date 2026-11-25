@@ -92,7 +92,19 @@ with open(path, "rb") as f:
         if not extra: break
         data += extra
         end += len(extra)
-cut = data.rfind(b"\\n")
+    cut = data.rfind(b"\\n")
+    if cut < 0 and end < size:
+        # One record longer than 6 MB (a tool output carrying images): find where it ends and step
+        # over it. Stopping here instead left the reader stuck on it forever, so nothing after it showed.
+        pos = end
+        while True:
+            buf = f.read(1024 * 1024)
+            if not buf: break
+            i = buf.find(b"\\n")
+            if i >= 0:
+                sys.stdout.write(f"{pos + i + 1} {int(trunc)} 0 {size}\\n")
+                sys.exit(0)
+            pos += len(buf)
 if cut < 0:
     sys.stdout.write(f"{off} {int(trunc)} {int(skip)} {size}\\n")
     sys.exit(0)

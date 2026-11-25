@@ -34,11 +34,35 @@ export function threadify(entries) {
       link.items.push(e);
       continue;
     }
-    if (e.kind === "notice" && e.event === "completed") flush();
+    // The turn's end: "Worked for …", or an interruption (the link goes under the replies, above the
+    // "Interrupted" pill; drawn after it, the link looked like a reply of its own).
+    if ((e.kind === "notice" && e.event === "completed") || (e.kind === "note" && e.text === "Interrupted")) flush();
     main.push(e);
   }
   flush();
   return { main, threads };
+}
+
+// Paging counts what the main column draws: each non-work entry is one, and each run of work
+// entries (folded into one thread link) is one. mainStart: the first index that keeps `limit` of
+// those; it never splits a run, so a thread link shows all of its turn's work.
+export function mainStart(entries, limit) {
+  let count = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const work = WORK_KINDS.has(entries[i].kind);
+    if (!work || !WORK_KINDS.has(entries[i + 1]?.kind)) count++;
+    if (count > limit) return i + 1;
+  }
+  return 0;
+}
+
+// How many main-column items entries[0, end) would draw (for "Show earlier (N)").
+export function mainCount(entries, end) {
+  let count = 0;
+  for (let i = 0; i < end; i++) {
+    if (!WORK_KINDS.has(entries[i].kind) || !WORK_KINDS.has(entries[i - 1]?.kind)) count++;
+  }
+  return count;
 }
 
 // The latest time among a thread's entries (ms), for "마지막 기록 오후 2:13".

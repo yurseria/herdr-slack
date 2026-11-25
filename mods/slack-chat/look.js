@@ -1,5 +1,6 @@
-// Discord-style message rows: avatar + name line at the start of each author's run,
-// later entries of the same run indented under it (like Discord's grouped messages).
+// How messages look: avatar + name line at the start of each author's run, later entries of the
+// same run under it without repeating them (Slack's grouped messages); date pills, typing lines, glow.
+// (typingLine and the non-Slack branches are left from the Discord look this mod was cloned from.)
 import { div, svg, image } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { shared } from "herdr";
