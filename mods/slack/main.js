@@ -6,7 +6,20 @@
 // 본문 채팅은 slack-chat 모드가 레이아웃 이름(slack)을 보고 슬랙 모양으로 그린다.
 import { View } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { theme, props, checking, appHome } from "herdr";
+import { theme, props, checking, appHome, shared, setShared, run, layout } from "herdr";
+import { sidebarView } from "./parts.js";
+
+const ACTIVITY_SIDEBAR_PX = 500; // '내 활동'일 때 사이드바 폭
+const SIDEBAR_WIDTH_KEY = "slack.sidebarWidth"; // 내 활동에 들어가기 전 폭
+
+function findNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
 import * as fs from "fs/promises";
 import { renderTopbar } from "./topbar.js";
 import { renderRail } from "./rail.js";
@@ -78,8 +91,27 @@ export default class Slack extends View {
     }
   }
 
+  // '내 활동'은 슬랙처럼 사이드바를 넓게 쓴다. 들어갈 때 지금 폭을 적어 두고 넓히며, 나가면 적어 둔 폭으로 돌린다.
+  // (레이아웃 클릭 상태에 남는 폭이라, 앱을 다시 켜도 shared 에 적어 둔 값으로 되돌릴 수 있다.)
+  fitSidebar() {
+    const mode = sidebarView(shared);
+    if (mode === this.sidebarMode) return;
+    const was = this.sidebarMode;
+    this.sidebarMode = mode;
+    const node = findNode(layout(), "sidebar");
+    const now = node?.size?.px;
+    const saved = shared(SIDEBAR_WIDTH_KEY);
+    if (mode === "activity") {
+      if (now && now !== ACTIVITY_SIDEBAR_PX) setShared(SIDEBAR_WIDTH_KEY, now);
+      if (now !== ACTIVITY_SIDEBAR_PX) run("layout.resize", { id: "sidebar", px: ACTIVITY_SIDEBAR_PX });
+    } else if (was !== undefined || now === ACTIVITY_SIDEBAR_PX) {
+      if (saved && now !== saved) run("layout.resize", { id: "sidebar", px: saved });
+    }
+  }
+
   render() {
     const t = theme();
+    if (this.view === "channels" && !checking()) this.fitSidebar();
     if (!checking() && POPUPS[this.view]) return POPUPS[this.view](this, t);
     if (checking() || !VIEWS[this.view]) {
       return h_flex().size_full().children(Object.entries(CHECK_VIEWS).map(([name, draw]) =>

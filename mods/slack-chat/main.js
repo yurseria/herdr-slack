@@ -1817,7 +1817,8 @@ export default class Chat extends View {
   slackThreadLink(t, { id, faces, label, last, lastWord, live, open, onClick }) {
     const hovered = this.hovered === id;
     const when = Number.isFinite(last) ? `${dayLabel(last)} 마지막 ${lastWord}: ${clock(last)}` : "";
-    return h_flex().id(id).w_full().max_w(640).ml(-6).px(6).py(3).gap(8).items_center().rounded(6).cursor_pointer()
+    // While running, the line takes the message's whole width so what the agent is doing isn't cut at 640px.
+    return h_flex().id(id).w_full().when(!live, (el) => el.max_w(640)).ml(-6).px(6).py(3).gap(8).items_center().rounded(6).cursor_pointer()
       .border_1().border_color(open || hovered ? t.border : "#00000000").when(open || hovered, (el) => el.bg(t.surface))
       .on_hover(this.hover(id))
       .on_click((_e, cx) => onClick(cx))
@@ -2270,8 +2271,12 @@ export default class Chat extends View {
               cx.notify();
             }
             this.binding = previous;
-            const screen = titleIdentity ? { stdout: "" } : await hc(["read", term.address]);
-            const result = await resolveSession(term, screen.stdout, file, previous?.file);
+            // Back in a tab whose session this same process already proved by its title: the title still
+            // names that log, so skip searching again (the slack layout restarts the chat on every tab visit).
+            const proven = titleIdentity && previous?.file && previous.evidence === "title";
+            const screen = titleIdentity || proven ? { stdout: "" } : await hc(["read", term.address]);
+            const result = proven ? { file: previous.file, evidence: "title", matchCount: 1 }
+              : await resolveSession(term, screen.stdout, file, previous?.file);
             if (!stillCurrent()) return;
             // No log yet: the title names one that isn't written, or none was written since the process started.
             waitingForLog = (result.evidence === "title" && result.matchCount === 0 && !result.subagent) || result.evidence === "no-log-yet";
@@ -2454,8 +2459,11 @@ export default class Chat extends View {
     const tailState = { gen, tail, kind, ready: false, chain: Promise.resolve() };
     this.activeTail = tailState;
     const dir = file.slice(0, file.lastIndexOf("/"));
-    const waitForChange = folderPoll(watchFolder, cx.timer, dir);
     cx.spawn(async (cx) => {
+      // The wait's fallback timer must belong to this task's cx: a cx kept from the caller (a check tick)
+      // is stale once that callback returns, and its timer never fires. Then a folder watch that stops
+      // answering left the chat stuck short of the log's end (a Codex reply after its work went missing).
+      const waitForChange = folderPoll(watchFolder, cx.timer, dir);
       try {
         const prevVisible = previous ? withChanges(compactSettings(previous.entries)).length : 0;
         let targetBytes = moreBytes ?? this.historyBytes;
@@ -3078,9 +3086,13 @@ export default class Chat extends View {
     if (cmd?.action && this.hostCommand(cmd, text.replace(/^\/\S+\s*/, ""), cx)) return cx.notify();
     const files = this.attach.map((a) => a.path);
     if (this.dialog) return this.startChat(text, files, cx);
-    // The agent is asking (a menu in its terminal) and you sent a message anyway: close the question
-    // with Escape, as in the terminal, then send the message once the menu has gone.
-    if (this.idleAsk) {
+    // The agent is asking and you sent a message anyway: close the question with Escape, as in the
+    // terminal, then send the message once the menu has gone. Asking is either a menu it opened on its
+    // own after a turn (idleAsk) or a question or permission request mid-turn ("blocked", the same
+    // "The agent is asking:" box). Right after an Escape the status can still say "blocked" for a
+    // moment: the resend skips this once (askDismissed) and the outbox checks the screen itself.
+    const asking = this.idleAsk || (Boolean(this.t) && this.terminal()?.status === "blocked");
+    if (asking && !this.askDismissed) {
       if (!text && !files.length) { this.error = ASK_FIRST; return cx.notify(); }
       if (this.dismissingAsk) return;
       // Escape didn't close it twice in a row: leave it to the person.
@@ -3092,7 +3104,8 @@ export default class Chat extends View {
       cx.spawn(async (cx) => {
         await sleep(cx, ASK_DISMISS_MS);
         this.dismissingAsk = false;
-        this.send(cx);
+        this.askDismissed = true;
+        try { this.send(cx); } finally { this.askDismissed = false; }
         cx.notify();
       });
       return cx.notify();
@@ -4597,7 +4610,8 @@ export default class Chat extends View {
     }
     const titleIdentity = codexTitleIdentity(term);
     const changedTitle = titleIdentity && this.file && !titleMatchesFile(titleIdentity, this.file);
-    if (!this.dialog && agentKind(term) === "codex" && (!this.sessionResolved || changedTitle)) {
+    // While a Codex session is being identified, Flockbook's quick rows (if any) stand in, as for Claude.
+    if (!this.dialog && agentKind(term) === "codex" && (!this.sessionResolved || changedTitle) && !this.preview?.entries?.length) {
       if (!this.identifyFeedback?.needsAction(identifyKey(term, titleIdentity))) {
         return v_flex().id("root").size_full().bg(t.background).text_color(t.dim).p(24)
           .child("Loading conversation…");

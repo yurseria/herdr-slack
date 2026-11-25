@@ -19,7 +19,7 @@ const HEADER_HEIGHT = 52;
 const ROW_HEIGHT = 28;
 const CARD_HEIGHT = 56;
 import { newChannelOverlay } from "./newchannel.js";
-import { activityAt, isUnread, groupByDay, timeLabel, UNREAD_ONLY_KEY } from "./activity.js";
+import { activityAt, isUnread, groupByDay, timeLabel, lastPrompt, UNREAD_ONLY_KEY } from "./activity.js";
 // 사이드바에서 만드는 채널은 새 스페이스(작업 폴더에서 시작).
 const NEW_MENU = newChannelOverlay("space");
 
@@ -300,20 +300,30 @@ function agentList(t, title, list, empty) {
 }
 
 // '내 활동': 세션을 마지막으로 움직인 시각 역순, 날짜별 머리. 위의 '읽지 않은 항목'으로 빨간 점 있는 것만.
+// 슬랙 활동 목록처럼: 채팅과 같은 바탕, 카드는 폭 전체에 위아래 · 오른쪽 여백, 카드 사이에 회색 선.
+//   1줄  이름(읽지 않았을 때만 굵게) · 시각     — 2줄과 같은 글씨 크기
+//   2줄  마지막 대화
+//   3줄  상태 · 프로젝트 · #탭 (조금 띄우고 굵게)
 function activityCard(t, a, at, now, since) {
   const sub = `${agentSubtitle(a.status, since, now)} · ${a.space_name} · #${a.tab_name}`;
-  return h_flex().id(`act-${a.address}`).mx(8).h(CARD_HEIGHT).flex_none().px(10).gap(10).items_center().rounded(8).cursor_pointer()
-    .when(a.focused, (el) => el.bg(GLASS.selected))
-    .when(!a.focused, (el) => el.hover((s) => s.bg(GLASS.hover)))
+  const said = lastPrompt(a);
+  const unread = isUnread(a);
+  return h_flex().id(`act-${a.address}`).flex_none().pl(18).pr(20).py(12).gap(10).items_start().cursor_pointer()
+    .border_b_1().border_color(t.border)
+    .when(a.focused, (el) => el.bg(t.selected))
+    .when(!a.focused, (el) => el.hover((s) => s.bg(t.hover)))
     .on_click(() => focusAgent(a))
-    .child(withStatusDot(t, programAvatar(t, a.program, 36), 36, a.status, GLASS.ring))
+    .child(div().pt(2).flex_none().child(withStatusDot(t, programAvatar(t, a.program, 36), 36, a.status, t.background)))
     .child(v_flex().flex_1().min_w(0).gap(2)
       .child(h_flex().gap(8).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(15).font_bold().text_color(white(t)).child(agentName(a)))
-        .child(div().flex_none().text_size(12).text_color(t.muted).child(timeLabel(at))))
-      .child(h_flex().gap(6).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_size(13).text_color(a.status === "blocked" ? "#ff8fb1" : t.muted).child(sub))
-        .when(isUnread(a), (el) => el.child(div().size(8).flex_none().rounded_full().bg(slackTheme().notify)))));
+        .child(div().min_w(0).truncate().text_size(14).text_color(t.foreground).when(unread, (el) => el.font_bold()).child(agentName(a)))
+        .child(div().flex_none().text_size(12).text_color(t.dim).child(timeLabel(at)))
+        .child(div().flex_1())
+        .when(unread, (el) => el.child(div().size(8).flex_none().rounded_full().bg(slackTheme().notify))))
+      // 마지막 대화(대화 로그에서, 내 말이면 "나: "). 없으면 이 줄은 빠진다.
+      .when(Boolean(said), (el) => el.child(div().min_w(0).truncate().text_size(14).text_color(t.foreground).child(said)))
+      .child(div().pt(6).min_w(0).truncate().text_size(12.5).font_bold()
+        .text_color(a.status === "blocked" ? "#ff8fb1" : t.muted).child(sub)));
 }
 
 function activityList(t) {
@@ -336,6 +346,7 @@ function activityList(t) {
     .child(v_flex().id("activity-list").flex_1().min_h(0).pb(16).overflow_y_scroll()
       .when(list.length === 0, (el) => el.child(div().px(18).py(8).text_size(13).text_color(t.muted)
         .child(unreadOnly ? "읽지 않은 항목이 없어요." : "아직 작업한 세션이 없어요.")))
+      .when(groups.length > 0, (el) => el.child(div().h(1).flex_none().bg(t.border)))
       .children(groups.flatMap((g) => [
         div().id(`day-${g.label}`).px(18).pt(12).pb(4).flex_none().text_size(13).font_bold().text_color(t.muted).child(g.label),
         ...g.items.map(({ agent, at }) => activityCard(t, agent, at, now, since.get(agent.tab) ?? null)),
@@ -349,7 +360,10 @@ export function renderChannels(view, t, forced = null) {
     return shell(agentList(t, "다이렉트 메시지", [...visibleAgents()].sort((a, b) => b.seq - a.seq),
       "아직 에이전트가 없어요. 오른쪽 위 연필을 눌러 Claude 를 시작해 보세요."));
   }
-  if (mode === "activity") return shell(activityList(t));
+  // 내 활동은 채팅과 같은 바탕에, 채팅과의 경계를 카드 사이 선과 같은 회색으로.
+  if (mode === "activity") {
+    return v_flex().id("sidebar").size_full().bg(t.background).border_r_1().border_color(t.border).child(activityList(t));
+  }
   const space = visibleSpaces().find((s) => s.active) ?? visibleSpaces().find((s) => s.id === focused()?.space);
   if (!space) return shell(div().p(16).text_size(13).text_color(t.muted).child("워크스페이스가 없어요. 왼쪽 + 로 프로젝트를 여세요."));
   return shell(homeList(view, t, space));

@@ -69,27 +69,66 @@ export function groupByDay(list, now = Date.now()) {
   return groups;
 }
 
-// 시각을 모르는 세션은 대화 로그의 마지막 메시지 시각으로 채운다. Flockbook 사이드카(slack-chat/bin)가
-// 터미널의 로그를 찾아 요약 행을 주는데, 그 행의 ts(ms) 중 가장 늦은 것을 쓴다. 세션마다 한 번만 묻는다.
+// 대화 로그에서 두 가지를 읽는다. Flockbook 사이드카(slack-chat/bin)가 터미널의 로그를 찾아 요약 행을 준다.
+//   시각을 모르는 세션: 행의 ts(ms) 중 가장 늦은 것을 마지막 시각으로 (세션마다 한 번만)
+//   마지막 대화: 가장 늦은 user · assistant 행의 글 → shared "slack.activityLast" { [address]: { text, seq, v } }
+//     내 말이면 "나: " 를 붙인다(슬랙 DM 미리보기처럼). seq 가 그대로면 다시 묻지 않는다
+//     (말을 보내거나 답이 끝나면 에이전트 상태가 바뀌어 seq 가 오른다). v 는 저장 형식이 바뀌면 다시 읽게 한다.
+export const LAST_PROMPT_KEY = "slack.activityLast";
+const LAST_VERSION = 3;
 const asked = new Set();
+let busy = false;
+
+// 한 줄로: 붙인 그림 경로는 [이미지], 마크다운 기호(링크 [글](주소)는 글만, 제목 #, 굵게 *, 코드 `)는 빼고, 공백은 하나로, 200자까지.
+function promptLine(text) {
+  return String(text ?? "").replace(/\S+\.(png|jpe?g|gif|webp|heic)\b/gi, "[이미지]")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/^\s*#{1,6}\s+/gm, "").replace(/\*\*|__|`/g, "")
+    .replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
+export const lastPrompt = (a) => (shared(LAST_PROMPT_KEY) ?? {})[a.address]?.text ?? "";
+
 export async function fillFromLogs() {
+  if (busy) return;
   const bin = `${appHome()}/mods/slack-chat/bin/flockbook-modfeed`;
   if (!(await fs.exists(bin).catch(() => false))) return;
-  const missing = agents().filter((a) => !a.address.includes("/") && !asked.has(a.address)
-    && (shared(ACTIVITY_KEY) ?? {})[a.address] && (shared(ACTIVITY_KEY) ?? {})[a.address].at == null);
-  for (const a of missing) {
-    asked.add(a.address);
-    const r = await exec(bin, ["feed", "--terminal", a.address, "--cache", `${appHome()}/data/slack-chat/flockbook-cache.json`,
-      "--home", appHome()], { timeout: 5000 }).catch(() => null);
-    if (!r || r.code !== 0) continue;
-    let last = null;
-    for (const line of String(r.stdout ?? "").split("\n")) {
-      let o; try { o = JSON.parse(line); } catch { continue; }
-      if (o.type === "row" && Number.isFinite(o.ts) && (last == null || o.ts > last)) last = o.ts;
+  busy = true;
+  try {
+    const live = agents().filter((a) => !a.address.includes("/"));
+    const needsAt = (a) => !asked.has(a.address) && (shared(ACTIVITY_KEY) ?? {})[a.address]
+      && (shared(ACTIVITY_KEY) ?? {})[a.address].at == null;
+    const needsPrompt = (a) => {
+      const saved = (shared(LAST_PROMPT_KEY) ?? {})[a.address];
+      return saved?.seq !== a.seq || saved?.v !== LAST_VERSION;
+    };
+    for (const a of live.filter((x) => needsAt(x) || needsPrompt(x))) {
+      const wantAt = needsAt(a);
+      if (wantAt) asked.add(a.address);
+      // 채팅 미리보기(slack-chat)와 캐시를 나눠 쓴다: 사이드카는 캐시에 적힌 위치를 기준으로 답하므로,
+      // 같은 파일을 쓰면 이쪽이 읽을 때마다 채팅의 첫 화면이 일부 행만 받게 된다.
+      const r = await exec(bin, ["feed", "--terminal", a.address, "--cache", `${appHome()}/data/slack/flockbook-activity-cache.json`,
+        "--home", appHome()], { timeout: 5000 }).catch(() => null);
+      let last = null;
+      let prompt = null;
+      for (const line of String(r?.code === 0 ? r.stdout ?? "" : "").split("\n")) {
+        let o; try { o = JSON.parse(line); } catch { continue; }
+        if (o.type !== "row") continue;
+        if (Number.isFinite(o.ts) && (last == null || o.ts > last)) last = o.ts;
+        if ((o.k === "user" || o.k === "assistant") && String(o.text ?? "").trim()) {
+          prompt = o.k === "user" ? `나: ${promptLine(o.text)}` : promptLine(o.text);
+        }
+      }
+      const saved = shared(ACTIVITY_KEY) ?? {};
+      if (wantAt && last != null && saved[a.address] && saved[a.address].at == null) {
+        setShared(ACTIVITY_KEY, { ...saved, [a.address]: { ...saved[a.address], at: last } });
+      }
+      // 사라진 에이전트의 것은 지우고, 이 에이전트의 것을 적는다(로그를 못 읽어도 seq 는 적어 다시 묻지 않게).
+      const alive = new Set(agents().map((x) => x.address));
+      const prompts = Object.fromEntries(Object.entries(shared(LAST_PROMPT_KEY) ?? {}).filter(([k]) => alive.has(k)));
+      const text = prompt ?? (prompts[a.address]?.text ?? "");
+      setShared(LAST_PROMPT_KEY, { ...prompts, [a.address]: { text, seq: a.seq, v: LAST_VERSION } });
     }
-    const saved = shared(ACTIVITY_KEY) ?? {};
-    if (last != null && saved[a.address] && saved[a.address].at == null) {
-      setShared(ACTIVITY_KEY, { ...saved, [a.address]: { ...saved[a.address], at: last } });
-    }
+  } finally {
+    busy = false;
   }
 }

@@ -92,8 +92,14 @@ starts again from the left. It moves only while the agent works and the chat is 
   session title; else "새 채널" (numbered when repeated). A new channel appears only once its
   repository is known, so it never jumps sections.
 - 홈 shows channels, DM shows every agent (newest first). 내 활동 lists every session by when it last
-  moved, newest first, under day headings (오늘, 어제, 11월 22일 일요일), each card with its time and a
-  red dot when unread; a 읽지 않은 항목 chip filters to the unread ones (blocked, or done and unseen).
+  moved, newest first, under day headings (오늘, 어제, 11월 22일 일요일); a 읽지 않은 항목 chip filters to
+  the unread ones (blocked, or done and unseen). Like Slack's activity list, it widens the sidebar to
+  500px (back to the earlier width on leaving), uses the chat's `background`, and draws full-width
+  cards (12px top/bottom, 20px right) split by gray `border` lines, with the same gray against the
+  chat. Each card has three lines: the agent's name (bold only when unread, 14px) and time, then the
+  last message in the conversation (14px; your own prefixed "나: ", markdown stripped, pasted image
+  paths as [이미지]), then status · project · #tab in bold 12.5px, 6px lower. A red dot on the first
+  line marks unread.
   The 읽지 않은 항목 quick link opens it filtered. 파일 toggles the files panel, 더 보기 opens the palette.
 - Workspace tile and sidebar title: rename the workspace or set its picture (right-click, or drop an
   image on the tile). Profile avatar: right-click to set your name and picture; they show on your
@@ -125,7 +131,10 @@ starts again from the left. It moves only while the agent works and the chat is 
   edge). Work threads list the turn's tool runs and thinking. Reply threads ask side questions about
   that reply without stopping the agent.
 - Escape closes an open thread first, otherwise stops the agent's turn.
-- Sending while the agent is asking closes its question (Escape to the terminal), then sends.
+- Sending while the agent is asking closes its question (Escape to the terminal), then sends. This
+  covers both a menu it opened after a turn and a question or permission request mid-turn.
+- While the agent works, the "N개의 댓글" line spans the message width so its current action isn't cut;
+  once done it is at most 640px, as in Slack.
 - What you're typing survives the chat reloading.
 - Enter with the cursor inside the text sends it as one line: the line break the box puts at the
   cursor before the send is dropped. A line break typed with Shift+Enter stays.
@@ -182,7 +191,9 @@ starts again from the left. It moves only while the agent works and the chat is 
     `workspace.js`, `profilemenu.js`, `spaceimage.js`.
   - `activity.js`: 내 활동. The rail records when each agent's `seq` rises (shared
     `slack.activityAt`); sessions with no time yet take the tab's `changed_at`, else the last row time
-    the Flockbook sidecar reads from their log. Filter in shared `slack.activityUnread`.
+    the Flockbook sidecar reads from their log. Filter in shared `slack.activityUnread`. The last
+    message per agent is read the same way when its `seq` changes, into shared `slack.activityLast`,
+    using its own sidecar cache (`data/slack/flockbook-activity-cache.json`).
   - `newchannel.js`: folder search runs `find ~ -maxdepth 5`, pruning hidden folders (except
     `.config`), `node_modules`, `Library`, `*.app`, `*.photoslibrary` and build folders.
   - `theme.js`, `themepanel.js`, `gradient.py`.
@@ -243,6 +254,12 @@ starts again from the left. It moves only while the agent works and the chat is 
   colors and one direction.
 - Some controls in Slack have no counterpart and are left out: huddles, canvases, pins, reactions.
 - Herdr gives no time for an agent's last activity, hence `activity.js`'s own record.
+- The sidecar answers relative to its cache file, so two callers must not share one: sharing let the
+  activity list's reads cut the chat's first preview down to a few rows.
+- The chat's log reader waits on a folder watch with a 15-second fallback timer. Create that wait
+  inside the reading task, with the task's own `cx.timer`: a timer taken from the caller's `cx` is
+  dead once that callback returns, and a watch that stopped answering then left the chat short of
+  the log's end (an agent's last reply after its work never showed).
 - Section dragging is built from `on_mouse_down`/`on_mouse_move`/`on_mouse_up`; GPUI drag-and-drop
   for elements isn't exposed. `on_size_change` only fires on a change, so each paging step also
   moves on after 400ms.
