@@ -34,7 +34,9 @@ export function threadify(entries) {
       link.items.push(e);
       continue;
     }
-    if (e.kind === "notice" && e.event === "completed") flush();
+    // The turn's end: "Worked for …", or an interruption (the link goes under the replies, above the
+    // "Interrupted" pill; drawn after it, the link looked like a reply of its own).
+    if ((e.kind === "notice" && e.event === "completed") || (e.kind === "note" && e.text === "Interrupted")) flush();
     main.push(e);
   }
   flush();

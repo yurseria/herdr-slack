@@ -143,7 +143,11 @@ starts again from the left. It moves only while the agent works and the chat is 
   down into the lower page goes back (A B → B C). Each move takes two frames (add one side, measure,
   drop the other) so what you're reading never jumps. Messages arriving meanwhile wait until you're
   back on the newest page; "↓ Latest" jumps there. Reaching the top of what's parsed reads 4MB more
-  of the log by itself ("Loading earlier history…"); there are no load buttons.
+  of the log by itself ("Loading earlier history…"); there are no load buttons. A window taller than
+  two pages adds the pages above (without dropping one) until it is full, so the top is never empty.
+- Opening a chat reads the log's last 4MB, doubling until there are two pages of talk (up to 256MB
+  for Codex, whose reader shrinks records over 256KB, and 16MB for others). An interrupted turn's
+  work link sits under its replies, above the "Interrupted" pill.
 - Before a new Claude session's log says otherwise, the mode and model come from
   `~/.claude/settings.json`: `permissions.defaultMode`, and `model` with a context suffix
   (`opus[1m]` shows "Opus 5.5 1M", effort from `modelSettings` or `effortLevel`).
@@ -210,7 +214,9 @@ starts again from the left. It moves only while the agent works and the chat is 
   `parse.js` (message times) and `session.js` (new Codex logs).
 - `mods/slack-chat-file`: the editor and image dialog behind `/memory`, `/config` and file previews
   (from Chat Plus).
-- `mods/slack-toast`: reopens each notification as a `kind: "window"` overlay at the top right.
+- `mods/slack-toast`: reopens each notification as a `kind: "window"` overlay at the top right of the
+  chat column, 104px down: left of the Files panel when it is open (layout node `panel`), so the
+  panel's tabs stay visible.
 - Shipped mods used: `files`, `changes`, `menu`, `picker`, `worktree`; `project-open` if installed.
 - `herdr` functions: `spaces`, `agents`, `panes`, `terminals`, `layout`, `shared`/`setShared`, `run`,
   `openOverlay`/`closeOverlay`, `exec`, `knownAgents`, `pickFolder`, `notify`, `window`, `home`,
@@ -258,8 +264,12 @@ starts again from the left. It moves only while the agent works and the chat is 
   activity list's reads cut the chat's first preview down to a few rows.
 - The chat's log reader waits on a folder watch with a 15-second fallback timer. Create that wait
   inside the reading task, with the task's own `cx.timer`: a timer taken from the caller's `cx` is
-  dead once that callback returns, and a watch that stopped answering then left the chat short of
-  the log's end (an agent's last reply after its work never showed).
+  dead once that callback returns, so a watch that stopped answering could leave the chat short of
+  the log's end.
+- The log reader continues from its last byte offset and only takes whole lines. A record with no
+  newline in 6MB used to keep the offset where it was forever, so nothing after it ever showed
+  (Codex writes image-generation output as one 8MB line). It now finds that record's end and steps
+  over it; only a record with no newline before the end of the file (still being written) waits.
 - Section dragging is built from `on_mouse_down`/`on_mouse_move`/`on_mouse_up`; GPUI drag-and-drop
   for elements isn't exposed. `on_size_change` only fires on a change, so each paging step also
   moves on after 400ms.

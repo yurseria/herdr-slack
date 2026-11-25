@@ -57,6 +57,9 @@ const CACHE = "data/chat";
 // pages 1+0. Scrolling into the top page loads the page above it and drops the bottom one (CD → BC → AB);
 // scrolling back down to the bottom page loads the page below it and drops the top one (AB → BC).
 const PAGE = 12; // 12 + 12 drawn at once (fewer = lighter redraws while typing)
+// How far back a first look may read for two pages. Codex's reader shrinks megabyte records (history.js),
+// so a whole long log costs about a second; other logs come in whole, so they stop sooner.
+const INITIAL_MAX_BYTES = { codex: 256 * 1024 * 1024, other: 16 * 1024 * 1024 };
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic)$/i;
 const AGENTS = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
@@ -2468,7 +2471,15 @@ export default class Chat extends View {
         const prevVisible = previous ? withChanges(compactSettings(previous.entries)).length : 0;
         let targetBytes = moreBytes ?? this.historyBytes;
         let lines, transcript;
-        for (let attempt = 0; attempt < 4; attempt++) {
+        // A first look reads the log's last bytes. Tool outputs can be megabytes per record, so those
+        // bytes may hold only the last reply: read further back (doubling, up to INITIAL_MAX_BYTES) until
+        // the chat has its two pages. Loading earlier history (previous) grows 4 MB a step as before.
+        const maxBytes = INITIAL_MAX_BYTES[kind === "codex" ? "codex" : "other"];
+        const enough = (entries) => {
+          const shownEntries = withChanges(compactSettings(entries));
+          return (this.slackLook ? mainCount(shownEntries, shownEntries.length) : shownEntries.length) >= PAGE * 2;
+        };
+        for (let attempt = 0; attempt < 8; attempt++) {
           if (kind === "codex") {
             const initial = await inheritedHistory(file, on, targetBytes);
             if (gen !== this.gen) return;
@@ -2484,11 +2495,21 @@ export default class Chat extends View {
             lines = await tail.read();
             if (gen !== this.gen) return;
           }
-          transcript = previous ? new Transcript(kind) : this.t;
+          transcript = previous || attempt > 0 ? new Transcript(kind) : this.t;
           for (const line of lines) transcript.feed(line);
-          if (!previous || !tail.truncated) break;
+          if (!tail.truncated) break;
+          if (!previous) {
+            if (enough(transcript.entries) || targetBytes >= maxBytes) break;
+            targetBytes = Math.min(targetBytes * 2, maxBytes);
+            continue;
+          }
+          if (attempt >= 3) break;
           if (withChanges(compactSettings(transcript.entries)).length > prevVisible) break;
           targetBytes += 4 * 1024 * 1024;
+        }
+        if (!previous && transcript !== this.t) {
+          this.t = transcript;
+          this.historyBytes = targetBytes; // "load earlier" continues from here
         }
         if (previous) {
           rebaseHistory(previous, transcript, this.pending, gen);
@@ -3404,6 +3425,23 @@ export default class Chat extends View {
     this.pagingFallback(cx);
   }
 
+  // A tall window can hold more than the two pages: while the content is shorter than the view and
+  // earlier messages are hidden, add the page above without dropping one (reading up would do the
+  // same, but the reader shouldn't see an empty top first). At the top of what the log gave, read
+  // further back.
+  fillView(cx) {
+    const pg = this.pg;
+    if (pg.step || pg.lo !== 0 || this.searching || this.contentH <= 0 || this.viewH <= 0 || this.contentH >= this.viewH) return;
+    if (this.hiddenEarlier > 0) {
+      pg.hi += 1;
+      pg.step = "fill";
+      this.earlier = true; // top change: keep off
+      this.cacheShown(cx);
+      this.pagingFallback(cx);
+      cx.notify();
+    } else if (this.truncated && !this.historyLoading) this.loadEarlier(cx);
+  }
+
   pageDown(cx) {
     const pg = this.pg;
     if (pg.step || pg.lo <= 0) return;
@@ -3426,7 +3464,7 @@ export default class Chat extends View {
     const pg = this.pg;
     if (pg.step === "up-drop") { pg.lo += 1; pg.step = "settle"; this.pgAdjust = true; this.pagingFallback(cx); cx.notify(); }
     else if (pg.step === "down-drop") { pg.hi -= 1; pg.step = "settle"; this.earlier = true; this.pagingFallback(cx); cx.notify(); }
-    else if (pg.step === "settle") pg.step = null;
+    else if (pg.step === "settle" || pg.step === "fill") { pg.step = null; if (cx) this.fillView(cx); }
   }
 
   // The drawn rows in two groups, one per page; the lower one's height tells where the boundary is.
@@ -4145,6 +4183,7 @@ export default class Chat extends View {
         this.contentH = size.height;
         this.clamp();
         if (this.pg.step) this.pagingMeasured(cx);
+        else this.fillView(cx);
         cx.notify();
       })
       // Earlier pages and earlier log history load by themselves when the reader reaches the top
@@ -4188,7 +4227,7 @@ export default class Chat extends View {
     const scroll = div().id("scroll").relative().flex_1().min_h(0).overflow_hidden()
       .on_size_change((size, cx) => {
         if (this.viewH === size.height && this.width === size.width) return;
-        this.viewH = size.height; this.width = size.width; this.clamp(); cx.notify();
+        this.viewH = size.height; this.width = size.width; this.clamp(); this.fillView(cx); cx.notify();
       })
       .on_mouse_move(event => { this.chatBounds = event.bounds; })
       .on_scroll_wheel((e, cx) => { this.off += e.delta.y; this.clamp(); this.pageByScroll(cx, e.delta.y); cx.notify(); })

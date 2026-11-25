@@ -11,6 +11,14 @@ skip_tail = int(sys.argv[3]) if len(sys.argv) > 3 else 0
 if limit <= 0 or skip_tail < 0: raise ValueError("Invalid history limit")
 seen = set()
 index = None
+BIG = 256 * 1024
+def shrink(value):
+    if isinstance(value, str):
+        if value.startswith("data:"): return ""
+        return value if len(value) <= 20000 else value[:4000] + "\\n… (truncated)"
+    if isinstance(value, list): return [shrink(v) for v in value]
+    if isinstance(value, dict): return {k: shrink(v) for k, v in value.items()}
+    return value
 def inherited(path, bound=None):
     global index
     path = path.resolve()
@@ -109,13 +117,21 @@ for seg_idx, (path, start, end) in enumerate(seg_list):
             stream.seek(start)
             data = stream.read(take)
     raw_consumed = len(data)
-    if b'"compacted"' in data and len(data) > 4096:
+    # Shrink records the chat can't show whole: a compaction summary becomes its marker, and a record
+    # over 256 KB (tool outputs carrying images, megabytes each) keeps its shape with long strings cut
+    # and inline image data dropped. A first look may read tens of MB to reach two pages of talk.
+    if len(data) > 4096 and (b'"compacted"' in data or len(data) > BIG):
         slim = []
         for raw_line in data.splitlines():
             if len(raw_line) > 4096 and b'"compacted"' in raw_line:
                 try:
                     if json.loads(raw_line).get("type") == "compacted":
                         raw_line = b'{"type":"compacted"}'
+                except Exception:
+                    pass
+            if len(raw_line) > BIG:
+                try:
+                    raw_line = json.dumps(shrink(json.loads(raw_line)), ensure_ascii=False).encode("utf-8")
                 except Exception:
                     pass
             slim.append(raw_line)
