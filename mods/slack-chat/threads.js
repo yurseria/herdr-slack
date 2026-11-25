@@ -41,6 +41,28 @@ export function threadify(entries) {
   return { main, threads };
 }
 
+// Paging counts what the main column draws: each non-work entry is one, and each run of work
+// entries (folded into one thread link) is one. mainStart: the first index that keeps `limit` of
+// those; it never splits a run, so a thread link shows all of its turn's work.
+export function mainStart(entries, limit) {
+  let count = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const work = WORK_KINDS.has(entries[i].kind);
+    if (!work || !WORK_KINDS.has(entries[i + 1]?.kind)) count++;
+    if (count > limit) return i + 1;
+  }
+  return 0;
+}
+
+// How many main-column items entries[0, end) would draw (for "Show earlier (N)").
+export function mainCount(entries, end) {
+  let count = 0;
+  for (let i = 0; i < end; i++) {
+    if (!WORK_KINDS.has(entries[i].kind) || !WORK_KINDS.has(entries[i - 1]?.kind)) count++;
+  }
+  return count;
+}
+
 // The latest time among a thread's entries (ms), for "마지막 기록 오후 2:13".
 export const lastAt = (items) => items.reduce((max, e) => (Number.isFinite(e.sentAt) && e.sentAt > max ? e.sentAt : max), -Infinity);
 

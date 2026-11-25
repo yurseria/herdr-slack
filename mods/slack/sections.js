@@ -43,8 +43,48 @@ export function moveTab(spaceId, tabId, sectionId) {
   save(spaceId, sectionId ? list.map((s) => (s.id === sectionId ? { ...s, tabs: [...s.tabs, tabId] } : s)) : list);
 }
 
-// 섹션 순서 바꾸기: by = -1(위로) | +1(아래로).
+// 사이드바 섹션(사용자 섹션 · 저장소 섹션 · '채널')의 순서. 끌어서 놓으면 여기에 전부 적어 둔다.
+//   shared "slack.sectionOrder" [sectionId…]
+const ORDER_KEY = "slack.sectionOrder";
+const savedOrder = () => shared(ORDER_KEY) ?? [];
+
+// natural(기본 순서: 사용자 섹션 → 저장소 → '채널')을 저장한 순서대로. 저장한 적 없는 섹션은
+// 기본 순서에서 바로 앞에 있던 섹션 뒤에 끼운다(맨 앞이면 맨 앞).
+export function orderSections(natural) {
+  const present = new Set(natural);
+  const out = savedOrder().filter((id) => present.has(id));
+  const placed = new Set(out);
+  natural.forEach((id, i) => {
+    if (placed.has(id)) return;
+    const prev = natural.slice(0, i).reverse().find((p) => placed.has(p));
+    out.splice(prev ? out.indexOf(prev) + 1 : 0, 0, id);
+    placed.add(id);
+  });
+  return out;
+}
+
+// 끌어 놓기: order(지금 보이는 순서)에서 id 를 target 앞(after 면 뒤)으로.
+export function dropSection(order, id, target, after) {
+  if (id === target) return;
+  const list = order.filter((x) => x !== id);
+  const at = list.indexOf(target);
+  if (at < 0) return;
+  list.splice(after ? at + 1 : at, 0, id);
+  setShared(ORDER_KEY, list);
+}
+
+// 섹션 메뉴의 위로/아래로: by = -1 | +1. 끌어 놓은 순서가 있으면 그 순서에서 옮긴다.
 export function shiftSection(spaceId, sectionId, by) {
+  const order = savedOrder();
+  if (order.includes(sectionId)) {
+    const i = order.indexOf(sectionId);
+    const j = i + by;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    setShared(ORDER_KEY, next);
+    return;
+  }
   const list = [...sectionsOf(spaceId)];
   const i = list.findIndex((s) => s.id === sectionId);
   const j = i + by;

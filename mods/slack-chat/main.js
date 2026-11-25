@@ -43,7 +43,7 @@ import { IdentifyFeedback, identifyKey } from "./identify.js";
 import { Outbox, outboxScope } from "./outbox.js";
 import { herdr, chatTab, away, hide, show, switchView } from "./backstage.js";
 import { messageRow, authorOf, typingLine, slackTyping, dateDivider, dayKey, clock, dayLabel, programFace, userFace, shimmerText, SHIMMER_SWEEP_MS } from "./discord-look.js";
-import { threadify, lastAt, replyQuestion } from "./threads.js";
+import { threadify, lastAt, replyQuestion, mainStart, mainCount } from "./threads.js";
 import { quickFeed } from "./flockfeed.js";
 import { withoutEnter } from "./enter.js";
 
@@ -52,7 +52,11 @@ const ASK_FIRST = "Answer the question above first.";
 const ASK_DISMISS_MS = 500;
 
 const CACHE = "data/chat";
-const PAGE = 12; // messages drawn at once; scrolling to the top loads more (fewer = lighter redraws while typing)
+// The chat draws a window of two pages of PAGE messages (Slack-style virtual paging). Pages count from the
+// newest: page 0 is the newest PAGE, page 1 the PAGE before it, and so on. At the bottom the window is
+// pages 1+0. Scrolling into the top page loads the page above it and drops the bottom one (CD → BC → AB);
+// scrolling back down to the bottom page loads the page below it and drops the top one (AB → BC).
+const PAGE = 12; // 12 + 12 drawn at once (fewer = lighter redraws while typing)
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic)$/i;
 const AGENTS = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
@@ -319,7 +323,7 @@ export default class Chat extends View {
       getId: () => this.terminalId || localId(this.term) || "chat",
       isEnabled: () => Boolean(shared("chat.trace")) || localStorage.getItem("chat.trace") === "1",
     });
-    this.limit = PAGE;
+    this.resetPaging();
     this.open = new Set();
     this.images = {};
     this.attach = [];
@@ -2100,7 +2104,7 @@ export default class Chat extends View {
       this.attach = saved?.attach ? [...saved.attach] : [];
       this.historyIdx = null;
       this.historyDraft = "";
-      this.frozenStart = null;
+      this.resetPaging();
       this.loadOutbox();
     }
     this.sig = null;
@@ -2439,9 +2443,8 @@ export default class Chat extends View {
     if (!previous) {
       this.t = new Transcript(kind);
       this.codexHandoff?.reset();
-      this.limit = PAGE;
+      this.resetPaging();
       this.off = 0;
-      this.frozenStart = null;
       this.historyBytes = 4 * 1024 * 1024;
       this.truncated = false;
     }
@@ -2482,8 +2485,7 @@ export default class Chat extends View {
         if (previous) {
           rebaseHistory(previous, transcript, this.pending, gen);
           this.t = transcript;
-          this.limit += PAGE;
-          this.earlier = true;
+          this.earlier = true; // older history lands above the window; the user pages up into it
           this.historyBytes = targetBytes;
         }
         this.truncated = tail.truncated;
@@ -2987,13 +2989,20 @@ export default class Chat extends View {
       this.matches = ents.length;
       return { start: Math.max(0, ents.length - 200), ents };
     }
-    let start = Math.max(0, ents.length - this.limit);
-    if (this.off > 24 && !this.earlier && this.frozenStart != null) {
-      start = Math.min(this.frozenStart, Math.max(0, ents.length - 1));
-    } else {
-      this.frozenStart = start;
-    }
-    return { start, ents };
+    // Slack folds work into thread links, so count what the main column draws, not raw entries.
+    const fromEnd = (n) => (this.slackLook ? mainStart(ents, n) : Math.max(0, ents.length - n));
+    const total = this.slackLook ? mainCount(ents, ents.length) : ents.length;
+    const pg = this.pg;
+    // Pages are counted from `base` (the message count when the reader left the bottom), so messages
+    // that arrive while reading earlier ones don't shift the window; they show once it reaches page 0.
+    if (pg.lo === 0 && pg.hi === 1 && this.off <= 24 && !pg.step) pg.base = null;
+    else pg.base ??= total;
+    const extra = total - (pg.base ?? total);
+    const start = fromEnd(extra + PAGE * (pg.hi + 1));
+    const end = pg.lo === 0 ? ents.length : fromEnd(extra + PAGE * pg.lo);
+    // Where the upper page ends and the lower one begins (mainStart never splits a work run).
+    const mid = Math.min(Math.max(fromEnd(extra + PAGE * pg.hi), start), end);
+    return { start, mid, end, ents };
   }
 
   openSearch(cx) {
@@ -3012,8 +3021,8 @@ export default class Chat extends View {
 
   // Images are drawn from Herdr's folder, so the shown ones are copied there first.
   cacheShown(cx) {
-    const { start, ents } = this.shown();
-    for (const e of ents.slice(start)) {
+    const { start, end, ents } = this.shown();
+    for (const e of ents.slice(start, end)) {
       for (const img of [...(e.images ?? []), ...(e.items ?? []).flatMap((i) => i.images)]) this.cache(img, cx);
     }
   }
@@ -3313,7 +3322,7 @@ export default class Chat extends View {
       model: this.chosen?.model ?? logged ?? cat?.model,
       effort: this.chosen?.effort ?? liveAgy?.effort ?? this.t?.effort ?? cat?.effort,
       // A pick here holds until the log reports a mode of its own.
-      mode: (this.mode && this.mode.logged === this.t?.mode ? this.mode.id : null) ?? liveAgy?.mode ?? this.t?.mode ?? (kind === "claude" ? "default" : kind === "agy" ? "auto" : null),
+      mode: (this.mode && this.mode.logged === this.t?.mode ? this.mode.id : null) ?? liveAgy?.mode ?? this.t?.mode ?? cat?.mode ?? (kind === "claude" ? "default" : kind === "agy" ? "auto" : null),
     };
   }
 
@@ -3362,18 +3371,80 @@ export default class Chat extends View {
     });
   }
 
-  // Like Discord: reaching the top loads the earlier messages; back at the
-  // bottom, only the newest page stays drawn so typing redraws stay light.
-  pageByScroll(cx) {
+  resetPaging() {
+    this.pg = { lo: 0, hi: 1, base: null, step: null };
+  }
+
+  // Moving the window takes two frames so the page being read never jumps. The window is positioned
+  // from the bottom (`off`), so a change at the top never moves it and a change at the bottom moves
+  // it by exactly the height that changed. Each step changes one side only; the content's size
+  // callback measures it and then runs the next step (pagingMeasured).
+  //   up:   1) add the page above (top)        2) drop the bottom page (off shrinks by its height)
+  //   down: 1) add the page below (bottom, off grows by its height)   2) drop the top page
+  pageUp(cx) {
+    const pg = this.pg;
+    if (pg.step || this.hiddenEarlier <= 0) return;
+    pg.hi += 1;
+    pg.step = "up-drop";
+    this.earlier = true; // top change: keep off
+    this.cacheShown(cx);
+    this.pagingFallback(cx);
+  }
+
+  pageDown(cx) {
+    const pg = this.pg;
+    if (pg.step || pg.lo <= 0) return;
+    pg.lo -= 1;
+    pg.step = "down-drop";
+    this.pgAdjust = true; // bottom change: off follows it
+    this.cacheShown(cx);
+    this.pagingFallback(cx);
+  }
+
+  // The size callback only runs when the height changes; a step that changes nothing (an empty page)
+  // would wait forever, so each step also moves on by itself after a moment.
+  pagingFallback(cx) {
+    const step = this.pg.step;
+    cx.timer.after(400, (cx2) => { if (this.pg.step === step) { this.pagingMeasured(cx2); cx2.notify(); } });
+  }
+
+  // Called from the content's size callback after a step's change is measured.
+  pagingMeasured(cx) {
+    const pg = this.pg;
+    if (pg.step === "up-drop") { pg.lo += 1; pg.step = "settle"; this.pgAdjust = true; this.pagingFallback(cx); cx.notify(); }
+    else if (pg.step === "down-drop") { pg.hi -= 1; pg.step = "settle"; this.earlier = true; this.pagingFallback(cx); cx.notify(); }
+    else if (pg.step === "settle") pg.step = null;
+  }
+
+  // The drawn rows in two groups, one per page; the lower one's height tells where the boundary is.
+  pageGroups(split, rows) {
+    return [
+      v_flex().id("page-upper").w_full().children(rows.slice(0, split)),
+      v_flex().id("page-lower").w_full().children(rows.slice(split))
+        .on_size_change((size) => { this.lowerH = size.height; }),
+    ];
+  }
+
+  // Paging follows the reader into a page: once the whole view is inside the upper page while
+  // scrolling up (the bottom page is out of sight), page up (CD → BC); once it is inside the lower page
+  // while scrolling down, page down (AB → BC). Nothing visible disappears, and right after a move the
+  // view sits in the other page, so it can't bounce back. The very top or bottom of the window also
+  // pages, for pages shorter than the view. dy > 0 scrolls up (toward older messages).
+  pageByScroll(cx, dy) {
+    if (this.pg.step || this.contentH <= 0 || !dy) return;
+    const boundary = (this.lowerH ?? 0) + 24; // content padding below the lower page
     const top = Math.max(0, this.contentH - this.viewH);
-    // One page per arrival at the top: `earlier` clears once the new height is measured.
-    if (!this.earlier && this.hiddenEarlier > 0 && this.contentH > 0 && this.off >= top - 40) {
-      this.earlier = true;
-      this.limit += PAGE;
-      this.cacheShown(cx);
-    } else if (this.off === 0 && this.limit > PAGE) {
-      this.limit = PAGE;
-    }
+    if (dy > 0 && this.hiddenEarlier > 0 && (this.off > boundary || this.off >= top - 40)) this.pageUp(cx);
+    // At the top of what the log has given so far: read further back in the log.
+    else if (dy > 0 && this.hiddenEarlier === 0 && this.truncated && this.off >= top - 40) this.loadEarlier(cx);
+    else if (dy < 0 && this.pg.lo > 0 && (this.off + this.viewH < boundary || this.off <= 40)) this.pageDown(cx);
+  }
+
+  // "↓ Latest": straight back to the newest two pages.
+  jumpToLatest(cx) {
+    this.resetPaging();
+    this.off = 0;
+    cx.notify();
   }
 
   clamp() {
@@ -4014,13 +4085,15 @@ export default class Chat extends View {
 
   body(t) {
     this.settle();
-    const { start, ents } = this.shown();
+    const { start, mid, end, ents } = this.shown();
     this.hiddenEarlier = start;
-    const all = ents.slice(start);
+    const all = ents.slice(start, end);
     // Slack: each turn's tool runs and thinking fold into a thread link (threads.js).
     const folded = this.slackLook ? threadify(all) : null;
     if (folded) this.workThreads = folded.threads;
     const shown = folded ? folded.main : all;
+    // How many drawn rows belong to the upper page (the rest, and anything queued, is the lower page).
+    const split = mid == null ? shown.length : this.slackLook ? threadify(ents.slice(start, mid)).main.length : mid - start;
     const streamText = this.streamShown();
     if (this.tracer?.isEnabled() && (this.t?.kind ?? agentKind(this.terminal())) === "codex") {
       const tail = shown.slice(-3).map((e) => `${e.key}:${e.kind}:${e.text?.length ?? e.items?.length ?? 0}`).join(",");
@@ -4048,26 +4121,24 @@ export default class Chat extends View {
     let lastDay = null; // the day of the last message drawn, for date dividers
     const content = v_flex().id("content").absolute().left(0).right(0).top(this.contentH > 0 ? this.viewH - this.contentH + this.off : 0).px(side).py(24).gap(0)
       .on_size_change((size, cx) => {
-        if (size.height === this.contentH) { this.anchorCard = false; return; }
+        if (size.height === this.contentH) { this.anchorCard = false; if (this.pg.step) this.pagingMeasured(cx); return; }
         // Position from the measured top, not the new bottom: height changes
         // must not move the whole page for a frame before this correction.
-        if ((this.off > 0 || this.anchorCard) && this.contentH > 0 && !this.earlier) this.off += size.height - this.contentH;
+        if ((this.off > 0 || this.anchorCard || this.pgAdjust) && this.contentH > 0 && !this.earlier) this.off += size.height - this.contentH;
         this.anchorCard = false;
+        this.pgAdjust = false;
         this.earlier = false;
         this.grew = false;
         this.contentH = size.height;
         this.clamp();
+        if (this.pg.step) this.pagingMeasured(cx);
         cx.notify();
       })
-      .when(start > 0, (el) => el.child(h_flex().w_full().justify_center().child(
-        div().id("earlier").px(10).py(4).rounded(8).cursor_pointer().bg(t.surface).text_size(12).text_color(t.muted)
-          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.earlier = true; this.limit += PAGE; this.cacheShown(cx); cx.notify(); })
-          .child(`Show earlier (${start})`))))
-      .when(start === 0 && Boolean(this.truncated), (el) => el.child(h_flex().w_full().justify_center()
-        .child(div().id("load-earlier-history").px(10).py(4).rounded(8).cursor_pointer().bg(t.surface).text_size(12).text_color(t.muted)
-          .hover(style => style.bg(t.hover)).on_click((_e, cx) => this.loadEarlier(cx))
-          .child(this.historyLoading ? "Loading earlier history…" : "Load earlier history"))))
-      .children(rendered.map((entry, index, entries) => {
+      // Earlier pages and earlier log history load by themselves when the reader reaches the top
+      // (pageByScroll), so the top only says when that is under way.
+      .when(start === 0 && Boolean(this.historyLoading), (el) => el.child(h_flex().w_full().justify_center()
+        .child(div().px(10).py(4).text_size(12).text_color(t.muted).child("Loading earlier history…"))))
+      .children(this.pageGroups(split, rendered.map((entry, index, entries) => {
         const previous = entries[index - 1];
         const tight = previous && ((["assistant", "tools", "thinking"].includes(previous.kind) && ["assistant", "tools", "thinking"].includes(entry.kind)) || entry.kind === "changes");
         const completed = entry.kind === "notice" && entry.event === "completed";
@@ -4089,11 +4160,12 @@ export default class Chat extends View {
               deferCopy.has(entry.key) ? "changes" : entries[index + 1]?.kind);
         const row = messageRow(t, { author, head, at: entry.sentAt, userName: this.discordUser(), userImage: this.discordUserImage(), program: this.terminal()?.program, body });
         // A thread link hugs the message above it (Slack).
-        const gap = entry.kind === "threadlink" ? 0 : head ? 18 : completed ? 0 : tight ? 6 : 10;
+        // A new author's first row keeps the usual gap even when it is a thread link (an answer still being worked on).
+        const gap = head ? 18 : entry.kind === "threadlink" ? 0 : completed ? 0 : tight ? 6 : 10;
         return v_flex().w_full().mt(index ? gap : 0)
           .when(Boolean(divider), (el) => el.child(divider))
           .child(this.slackLook && (entry.kind === "assistant" || entry.kind === "user") && entry.text ? this.slackHoverRow(entry, row, t) : row);
-      }))
+      })))
       .when(Boolean(streamText), (el) => el.child(v_flex().w_full().mt(authorOf(lastRendered) === "agent" ? 6 : 18)
         .child(messageRow(t, { author: "agent", head: authorOf(lastRendered) !== "agent", program: this.terminal()?.program,
           body: this.entry({ kind: "assistant", text: streamText, key: "streaming" }, t, true) }))))
@@ -4106,7 +4178,7 @@ export default class Chat extends View {
         this.viewH = size.height; this.width = size.width; this.clamp(); cx.notify();
       })
       .on_mouse_move(event => { this.chatBounds = event.bounds; })
-      .on_scroll_wheel((e, cx) => { this.off += e.delta.y; this.clamp(); this.pageByScroll(cx); cx.notify(); })
+      .on_scroll_wheel((e, cx) => { this.off += e.delta.y; this.clamp(); this.pageByScroll(cx, e.delta.y); cx.notify(); })
       .child(content);
 
     // A thin scroll thumb, and a way back to the newest message.
@@ -4119,7 +4191,7 @@ export default class Chat extends View {
     if (this.off > 40) {
       scroll.child(div().id("latest").absolute().bottom(12).right(16).px(10).py(5).rounded(12).cursor_pointer()
         .bg(t.popover).border_1().border_color(t.border).text_size(12).text_color(t.foreground)
-        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => { this.off = 0; cx.notify(); }).child("↓ Latest"));
+        .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.jumpToLatest(cx)).child("↓ Latest"));
     }
     if (!this.t && !this.pending.length && !this.preview?.entries?.length) {
       const term = this.terminal(), name = AGENTS[agentKind(term)] ?? "The agent";

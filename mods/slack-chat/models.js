@@ -95,11 +95,18 @@ export async function catalog(kind, on) {
     let s = {};
     try { s = JSON.parse(await cat(".claude/settings.json", on)); } catch {}
     const custom = typeof s.model === "string" && s.model.trim() ? s.model.trim() : null;
-    const known = CLAUDE_MODELS.find((m) => m.alias === custom || m.id === custom);
-    const models = (known || !custom ? CLAUDE_MODELS : [{ id: custom, name: custom }, ...CLAUDE_MODELS]).map((m) => ({ ...m, efforts: CLAUDE_EFFORTS }));
-    const model = known?.id ?? custom ?? CLAUDE_MODELS[0].id;
-    const effort = s.modelSettings?.[model]?.effortLevel ?? s.effortLevel ?? "medium";
-    return { models, model, effort };
+    // "opus[1m]": an alias with a context suffix. It is that model (shown as "Opus 5.5 1M"), kept as written
+    // so a launch from here asks for the same context.
+    const suffix = /\[([^\]]+)\]$/.exec(custom ?? "")?.[1] ?? null;
+    const bare = custom?.replace(/\[[^\]]+\]$/, "") ?? null;
+    const known = CLAUDE_MODELS.find((m) => m.alias === bare || m.id === bare);
+    const extra = custom && !(known && !suffix) ? [{ id: custom, name: known ? `${known.name} ${suffix.toUpperCase()}` : custom }] : [];
+    const models = [...extra, ...CLAUDE_MODELS].map((m) => ({ ...m, efforts: CLAUDE_EFFORTS }));
+    const model = extra[0]?.id ?? known?.id ?? CLAUDE_MODELS[0].id;
+    const effort = s.modelSettings?.[model]?.effortLevel ?? s.modelSettings?.[known?.id]?.effortLevel ?? s.effortLevel ?? "medium";
+    // The permission mode a new session starts in (Claude Code's own default when unset).
+    const mode = typeof s.permissions?.defaultMode === "string" ? s.permissions.defaultMode : "default";
+    return { models, model, effort, mode };
   }
   let c = {};
   try { c = JSON.parse(await cat(".codex/models_cache.json", on)); } catch {}

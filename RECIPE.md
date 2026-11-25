@@ -33,9 +33,13 @@ gradient from the top-left corner, `#9C0000` to `#070C52`.
     - Header (52px): the workspace name (18px bold) with ⌄, a gear and a pen.
     - "대화 찾기..." field.
     - Quick links: 읽지 않은 항목 (with a count badge), 다이렉트 메시지, 디렉터리; then a hairline.
-    - Sections, each with a 28px head: your own sections first, then one section per git repository
-      (its name), then "채널" for spaces outside any repository, then + 채널 추가, then
-      "다이렉트 메시지" (this channel's agents with presence dots).
+    - Sections, each with a 28px head: your own sections, one section per git repository (its name)
+      and "채널" for spaces outside any repository, in the order you dragged them (default: yours,
+      repositories, 채널); then + 채널 추가, then "다이렉트 메시지" (this channel's agents with
+      presence dots).
+    - A repository section's head shows an 18px rounded square with its first letter instead of the
+      caret, colored per letter (26 hues stepped 11 apart, three lightness levels). Name prefixes
+      listed in `data/slack/tile-prefixes.json` (e.g. `["acme-"]`) are skipped, so `acme-api` shows A.
     - Channel rows (28px, 15px text): "#" and the channel name. The current channel is filled with
       the theme's selected color. Channels with work you haven't seen are bold white. An agent waiting
       for you shows a count badge in the theme's notify color; a working one, a pulsing green dot.
@@ -78,20 +82,34 @@ starts again from the left. It moves only while the agent works and the chat is 
   and the space menu.
 - Click a section head to fold it; a folded section still shows the current channel and channels that
   need you. Right-click a section head to rename it, give it an emoji, move it up or down, or delete it
-  (its channels go back). A section emoji takes the caret's place and turns into the caret on hover.
+  (its channels go back). A section emoji (or a repository's letter square) takes the caret's place
+  and turns into the caret on hover.
+- Drag a section head to reorder sections; an accent line shows where it lands and the dragged
+  section fades. Releasing in place doesn't fold it; leaving the sidebar cancels.
+- Hovering a repository section shows a + at its right: it opens 새 채널 with that repository's
+  folder filled in and the first-message box focused.
 - Channel names: a name you gave; else the branch without `feat/`, `fix/`… prefixes; else the agent's
   session title; else "새 채널" (numbered when repeated). A new channel appears only once its
   repository is known, so it never jumps sections.
-- 홈 shows channels, DM shows every agent (newest first), and 내 활동 shows agents that are blocked or
-  done. 파일 toggles the files panel, 더 보기 opens the palette.
+- 홈 shows channels, DM shows every agent (newest first). 내 활동 lists every session by when it last
+  moved, newest first, under day headings (오늘, 어제, 11월 22일 일요일), each card with its time and a
+  red dot when unread; a 읽지 않은 항목 chip filters to the unread ones (blocked, or done and unseen).
+  The 읽지 않은 항목 quick link opens it filtered. 파일 toggles the files panel, 더 보기 opens the palette.
 - Workspace tile and sidebar title: rename the workspace or set its picture (right-click, or drop an
   image on the tile). Profile avatar: right-click to set your name and picture; they show on your
   messages.
 - The pen, + and 채널 추가 open **새 채널**: choose an agent (installed ones, most used first) or a
-  terminal, a working folder (type to search folders under home in a dropdown, or pick one), a name
-  and a first message. With a folder you get a new space; without one, a tab in **#일반** (the home
-  folder's space, created if missing). The header's + opens the same dialog for a new tab in this
-  channel.
+  terminal, 작업 폴더 (선택) (type to search folders under home in a dropdown, or pick one), 채널 이름
+  (선택) ("비우면 브랜치 이름으로 보여요") and 첫 메시지 (선택).
+  - With a folder: a new channel, unless a channel on the same worktree (same `git rev-parse
+    --show-toplevel`) exists; then the agent joins that channel as a tab. Channel = worktree.
+  - With a name typed, **새 worktree 생성** can be ticked: it runs `git worktree add` with the name as
+    the branch (spaces → `-`) in `<worktrees.directory or ~/.herdr/worktrees>/<repo>/<branch>` and
+    opens the new channel there. Errors (not a repository, bad branch name, folder exists) show as a
+    notification and keep the dialog open.
+  - Without a folder: a tab in **#일반** (the home folder's space, created if missing), named after
+    the first message.
+  - The header's + opens the same dialog for a new tab in this channel.
 - The moon opens **테마**. It has 7 presets (크림슨 미드나잇, 오버진, 제이드, 라군, 바바라, 무드 인디고,
   그래파이트) and four colors to set as hex or with the macOS color picker: 시스템 탐색 (window), 선택된
   항목 (current channel, gradient end), 현재 상태 (presence) and 알림 (badges). A checkbox turns the
@@ -111,8 +129,16 @@ starts again from the left. It moves only while the agent works and the chat is 
 - What you're typing survives the chat reloading.
 - Enter with the cursor inside the text sends it as one line: the line break the box puts at the
   cursor before the send is dropped. A line break typed with Shift+Enter stays.
-- Only the newest 12 messages are drawn; scrolling to the top loads 12 more, and returning to the
-  bottom trims back. This keeps typing light in long conversations.
+- At most two pages of 12 messages are drawn. With pages A B C D (D newest), the bottom shows C D.
+  Once the whole view is inside C while scrolling up, B is added and D dropped (B C); then A B. Scrolling
+  down into the lower page goes back (A B → B C). Each move takes two frames (add one side, measure,
+  drop the other) so what you're reading never jumps. Messages arriving meanwhile wait until you're
+  back on the newest page; "↓ Latest" jumps there. Reaching the top of what's parsed reads 4MB more
+  of the log by itself ("Loading earlier history…"); there are no load buttons.
+- Before a new Claude session's log says otherwise, the mode and model come from
+  `~/.claude/settings.json`: `permissions.defaultMode`, and `model` with a context suffix
+  (`opus[1m]` shows "Opus 5.5 1M", effort from `modelSettings` or `effortLevel`).
+- A new author's first row keeps the 18px gap even when it is only a thread link (a turn in progress).
 - Long conversations first show a quick preview from the Flockbook sidecar (about 0.1s), then the
   full view once the log is parsed.
 - A new Codex terminal with no log yet waits for its first message instead of asking to run /status.
@@ -152,7 +178,11 @@ starts again from the left. It moves only while the agent works and the chat is 
   - `look.js`: names, `channelNames`, `groupByRepo`, `tabTitle`.
   - `repos.js`: `git rev-parse --git-common-dir` per space folder, every 0.3s for new folders and 15s
     otherwise.
-  - `sections.js`, `sectionmenu.js`, `workspace.js`, `profilemenu.js`, `spaceimage.js`.
+  - `sections.js` (custom sections; section order in shared `slack.sectionOrder`), `sectionmenu.js`,
+    `workspace.js`, `profilemenu.js`, `spaceimage.js`.
+  - `activity.js`: 내 활동. The rail records when each agent's `seq` rises (shared
+    `slack.activityAt`); sessions with no time yet take the tab's `changed_at`, else the last row time
+    the Flockbook sidecar reads from their log. Filter in shared `slack.activityUnread`.
   - `newchannel.js`: folder search runs `find ~ -maxdepth 5`, pruning hidden folders (except
     `.config`), `node_modules`, `Library`, `*.app`, `*.photoslibrary` and build folders.
   - `theme.js`, `themepanel.js`, `gradient.py`.
@@ -186,8 +216,10 @@ starts again from the left. It moves only while the agent works and the chat is 
   - Programs: `git` in each space folder, `find` over your home folder (new-channel dialog only),
     `python3`, `sips`, `osascript`, `hc`, `ps`, and `mods/slack-chat/bin/flockbook-modfeed`.
   - Files it reads: agent logs under `~/.claude` and `~/.codex`.
+  - Files it reads: `data/slack/tile-prefixes.json` (optional, yours; not part of the layout).
   - Files it writes: `layouts/slack.json` (the theme background), `backgrounds/slack-*.png`,
     `data/slack/` (pictures) and `data/slack-chat/` (sidecar cache).
+  - 새 worktree 생성 runs `git worktree add` in the chosen repository.
   - No network access, apart from what Chat Plus does for Claude and Codex.
 - `layout.set` sent from a mod did not change the root background, so `theme.js` rewrites
   `layouts/slack.json` instead.
@@ -210,6 +242,10 @@ starts again from the left. It moves only while the agent works and the chat is 
 - The window gradient is a radial PNG from the top-left corner, because layout gradients take two
   colors and one direction.
 - Some controls in Slack have no counterpart and are left out: huddles, canvases, pins, reactions.
+- Herdr gives no time for an agent's last activity, hence `activity.js`'s own record.
+- Section dragging is built from `on_mouse_down`/`on_mouse_move`/`on_mouse_up`; GPUI drag-and-drop
+  for elements isn't exposed. `on_size_change` only fires on a change, so each paging step also
+  moves on after 400ms.
 - Tested on macOS at 2× only.
 
 ## Done when
@@ -229,3 +265,8 @@ starts again from the left. It moves only while the agent works and the chat is 
 - The moon → 라군 turns the window to the Lagoon gradient and the current channel to `#2C7BB6`.
 - The pen with an empty folder and a first message adds a tab to #일반 named after the message.
 - A finished agent's notification appears at the top right.
+- Dragging a repository section above your own sections keeps that order after a restart.
+- 내 활동 shows yesterday's sessions under 어제 with their times; 읽지 않은 항목 leaves only red-dot
+  sessions.
+- 새 채널 with a name and 새 worktree 생성 ticked creates the worktree and a channel named after its
+  branch.

@@ -21,7 +21,9 @@ import { renderNewChannel, initNewChannel } from "./newchannel.js";
 import { renderThemePanel, initThemePanel } from "./themepanel.js";
 import { applyBackground } from "./theme.js";
 import { loadDemo } from "./demo.js";
+import { loadTilePrefixes } from "./repos.js";
 import { handleImageRequest } from "./spaceimage.js";
+import { trackActivity, fillFromLogs } from "./activity.js";
 
 const VIEWS = { topbar: renderTopbar, rail: renderRail, channels: renderChannels, header: renderHeader };
 // herdr-app check 는 props 를 못 넘겨서 모든 부분을 나란히 그린다(크기는 레이아웃과 같게).
@@ -61,13 +63,19 @@ export default class Slack extends View {
         cx.notify();
       });
       cx.timer.every(SYNC_MS, (cx) => handleImageRequest(this, cx));
+      // '내 활동'의 시각: 에이전트가 바뀐 때를 적어 둔다.
+      trackActivity();
+      cx.timer.every(2000, (cx) => { trackActivity(); cx.spawn(async () => { await fillFromLogs(); }); });
       cx.spawn(async () => { await loadDemo(); });
       // The window background follows the saved theme (it may have been chosen elsewhere or before a restart).
       cx.spawn(async () => { await applyBackground(); });
     }
     if (this.view === "header") cx.timer.every(SYNC_MS, (cx) => syncView(this, cx));
     // 사이드바가 채널(스페이스)을 저장소별로 묶으려면 폴더마다 git 저장소를 알아야 한다.
-    if (this.view === "channels") watchRepos(this, cx);
+    if (this.view === "channels") {
+      watchRepos(this, cx);
+      cx.spawn(async (cx) => { this.tilePrefixes = await loadTilePrefixes(); cx.notify(); });
+    }
   }
 
   render() {
