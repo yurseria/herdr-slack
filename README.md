@@ -29,6 +29,9 @@ See [RECIPE.md](RECIPE.md) for everything it does and how it is built.
 - `mods/slack-chat` and `mods/slack-chat-file` are based on
   [Herdr Chat Plus](https://github.com/AIPIXZ/herdr-chat-plus) and
   [Herdr Chat](https://github.com/naruse/herdr-chat): MIT, see `mods/slack-chat/LICENSE` and `NOTICE.md`.
+- `mods/chat-preview` is Herdr Chat Plus's preview with a back button added: MIT, see
+  `mods/chat-preview/LICENSE` and `NOTICE.md`. Installing it replaces a Chat Plus `chat-preview`.
+- `mods/slack-files` is a copy of Herdr's shipped `files` mod, changed for the right panel.
 - `mods/slack-chat/bin/flockbook-modfeed` is the sidecar of
   [Flockbook](https://github.com/minchenlee/flockbook), included unchanged: MIT, see
   `mods/slack-chat/bin/LICENSE-flockbook`.

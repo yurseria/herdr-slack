@@ -1,32 +1,19 @@
 // 채널 머리줄(92px). 채널 = 스페이스(본 체크아웃·worktree).
 //   위 줄   # 채널 이름(브랜치) ⌄ · 소개(지금 세션 제목) … 채팅/터미널 · 에이전트 수 · 나누기 · 찾기 · 메뉴
-//   아래 줄 이 채널의 세션 탭들(Paseo 의 작업 영역 탭처럼) · 파일 및 링크 · + (새 세션)
+//   아래 줄 이 채널의 세션 탭들(Paseo 의 작업 영역 탭처럼) · + (새 세션) … 오른쪽 끝에 파일 및 링크 · 터미널(오른쪽 패널)
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, panes, agents, run, layout, home, openOverlay } from "herdr";
+import { spaces, panes, agents, run, home, openOverlay } from "herdr";
 import { programAvatar } from "./parts.js";
 import { icon, strong } from "./parts.js";
 import { agentPane, chatShown, selectView } from "./chatview.js";
 import { cleanTitle, channelNames, tabTitle } from "./look.js";
 import { channelMenuOverlay } from "./sectionmenu.js";
 import { newChannelOverlay } from "./newchannel.js";
+import { panelState, panelButtonOn, togglePanel } from "./panel.js";
 
-const PANEL_NODE = "panel";
 export const HEADER_HEIGHT = 92;
 
-function findNode(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = findNode(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-const isShown = (id) => {
-  const node = findNode(layout(), id);
-  return Boolean(node) && !node.hidden;
-};
 
 const tilde = (path, homeDir) => (path === homeDir ? "~" : path.startsWith(`${homeDir}/`) ? `~${path.slice(homeDir.length)}` : path);
 
@@ -89,6 +76,7 @@ export function renderHeader(view, t) {
   const about = (title && title !== channelName ? title : "") || place;
   const agent = Boolean(tab && agentPane(tab.id));
   const chat = agent && chatShown();
+  const panel = panelState();
   return v_flex().id("header").size_full().bg(t.background).border_b(1).border_color(t.border)
     .child(h_flex().h(52).flex_none().pl(16).pr(14).gap(10).items_center()
       .child(h_flex().id("channel-title").flex_none().max_w(360).px(6).py(3).gap(4).items_center().rounded(6).cursor_pointer()
@@ -110,26 +98,30 @@ export function renderHeader(view, t) {
         .when(!chat, (el) => el.child(toolButton(t, "split", "split", "오른쪽으로 나누기 (⌘D)", false, () => run("pane.split", { direction: "right" }))))
         .child(toolButton(t, "find", "search", "찾기 (⌘P)", false, () => run("mod.open", { name: "picker" })))
         .child(toolButton(t, "more", "more-vertical", "채널 메뉴", false, () => space && openOverlay(channelMenuOverlay(space.id, null))))))
-    .child(h_flex().id("session-tabs").flex_1().min_w(0).px(20).gap(18).items_end().overflow_x_scroll()
-      .children(tabs.map((x) => {
-        const tabAgents = allAgents.filter((a) => a.tab === x.id);
-        const tabPanes = allPanes.filter((p) => p.tab === x.id);
-        const program = tabAgents[0]?.program ?? tabPanes[0]?.program ?? null;
-        const title = tabTitle(x, tabAgents, tabPanes);
-        return channelTab(t, `tab-${x.id}`, "terminal", title, x.active, () => run("tab.select", { id: x.id }), {
-          lead: program ? programAvatar(t, program, 16) : null,
-          tip: `${title} · 휠 클릭: 탭 닫기`,
-          // 휠 클릭으로 닫기(브라우저 탭처럼). 채널의 마지막 탭이면 Herdr 가 스페이스를 닫을지 먼저 묻는다.
-          onMiddle: () => run("tab.close", { id: x.id }),
-          onRight: () => openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: x.id, space: space.id } } }),
-        });
-      }))
-      .child(channelTab(t, "tab-files", "files", "파일 및 링크", isShown(PANEL_NODE), () => run("layout.toggle", { id: PANEL_NODE })))
-      // 탭들과 같은 틀(글자 줄 pb 8 + 아래 2px 막대 자리)이라 + 가 탭 글자와 같은 높이에 선다.
-      .child(v_flex().id("tab-add").h_full().flex_none().justify_end().cursor_pointer().text_color(t.muted)
-        .hover((s) => s.text_color(strong(t))).tooltip("새 세션 (이 채널에 탭 추가)")
-        .on_click(() => openOverlay(newChannelOverlay("tab")))
-        .child(h_flex().px(4).pb(8).gap(6).items_center().text_size(14).font_semibold()
-          .child(icon("plus", 15)).child(div().w(0).child("\u200b"))) // 보이지 않는 글자로 탭 글자와 같은 줄 높이를 만든다
-        .child(div().h(2))));
+    .child(h_flex().flex_1().min_h(0).w_full().pr(16).gap(18)
+      .child(h_flex().id("session-tabs").flex_1().min_w(0).h_full().pl(20).gap(18).items_end().overflow_x_scroll()
+        .children(tabs.map((x) => {
+          const tabAgents = allAgents.filter((a) => a.tab === x.id);
+          const tabPanes = allPanes.filter((p) => p.tab === x.id);
+          const program = tabAgents[0]?.program ?? tabPanes[0]?.program ?? null;
+          const title = tabTitle(x, tabAgents, tabPanes);
+          return channelTab(t, `tab-${x.id}`, "terminal", title, x.active, () => run("tab.select", { id: x.id }), {
+            lead: program ? programAvatar(t, program, 16) : null,
+            tip: `${title} · 휠 클릭: 탭 닫기`,
+            // 휠 클릭으로 닫기(브라우저 탭처럼). 채널의 마지막 탭이면 Herdr 가 스페이스를 닫을지 먼저 묻는다.
+            onMiddle: () => run("tab.close", { id: x.id }),
+            onRight: () => openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: x.id, space: space.id } } }),
+          });
+        }))
+        // 탭들과 같은 틀(글자 줄 pb 8 + 아래 2px 막대 자리)이라 + 가 탭 글자와 같은 높이에 선다.
+        .child(v_flex().id("tab-add").h_full().flex_none().justify_end().cursor_pointer().text_color(t.muted)
+          .hover((s) => s.text_color(strong(t))).tooltip("새 세션 (이 채널에 탭 추가)")
+          .on_click(() => openOverlay(newChannelOverlay("tab")))
+          .child(h_flex().px(4).pb(8).gap(6).items_center().text_size(14).font_semibold()
+            .child(icon("plus", 15)).child(div().w(0).child("\u200b"))) // 보이지 않는 글자로 탭 글자와 같은 줄 높이를 만든다
+          .child(div().h(2))))
+      // 오른쪽 패널 버튼은 탭이 많아져도 밀리지 않게 탭 줄 오른쪽 끝에 둔다.
+      .child(h_flex().flex_none().h_full().gap(18).items_end()
+        .child(channelTab(t, "tab-files", "files", "파일 및 링크", panelButtonOn("files", panel), () => togglePanel("files")))
+        .child(channelTab(t, "tab-terminal", "terminal", "터미널", panelButtonOn("terminal", panel), () => togglePanel("terminal")))));
 }

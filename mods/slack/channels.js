@@ -19,7 +19,7 @@ const HEADER_HEIGHT = 52;
 const ROW_HEIGHT = 28;
 const CARD_HEIGHT = 56;
 import { newChannelOverlay } from "./newchannel.js";
-import { activityAt, isUnread, groupByDay, timeLabel, lastPrompt, UNREAD_ONLY_KEY } from "./activity.js";
+import { activityAt, isUnread, groupByDay, timeLabel, lastPrompt, stoppedSessions, UNREAD_ONLY_KEY } from "./activity.js";
 // 사이드바에서 만드는 채널은 새 스페이스(작업 폴더에서 시작).
 const NEW_MENU = newChannelOverlay("space");
 
@@ -326,11 +326,33 @@ function activityCard(t, a, at, now, since) {
         .text_color(a.status === "blocked" ? (glass(t).blockedText ?? t.blocked) : t.muted).child(sub)));
 }
 
+// 멈춘 대화(Herdr 재시작으로 셸만 남은 탭): 흐리게, 상태 자리에 '멈춤'. 누르면 그 탭이 열리며 지난 대화를 이어 붙인다.
+function stoppedCard(t, s) {
+  const kind = s.rec.kind ?? "claude";
+  const program = visibleAgents().find((a) => String(a.program?.name ?? "").toLowerCase().includes(kind))?.program
+    ?? { name: kind === "codex" ? "Codex" : "Claude" };
+  const name = cleanTitle(s.rec.title) || s.tab.name;
+  return h_flex().id(`act-stopped-${s.address}`).flex_none().pl(18).pr(20).py(12).gap(10).items_start().cursor_pointer()
+    .border_b_1().border_color(t.border).hover((el) => el.bg(t.hover))
+    .on_click(() => run("tab.select", { id: s.tab.id }))
+    .child(div().pt(2).flex_none().opacity(0.55).child(withStatusDot(t, programAvatar(t, program, 36), 36, "idle", t.background)))
+    .child(v_flex().flex_1().min_w(0).gap(2)
+      .child(h_flex().gap(8).items_center()
+        .child(div().min_w(0).truncate().text_size(14).text_color(t.muted).child(name))
+        .child(div().flex_none().text_size(12).text_color(t.dim).child(timeLabel(s.at))))
+      .when(Boolean(s.said), (el) => el.child(div().min_w(0).truncate().text_size(14).text_color(t.muted).child(s.said)))
+      .child(div().pt(6).min_w(0).truncate().text_size(12.5).font_bold().text_color(t.dim)
+        .child(`멈춤 · 누르면 이어서 열어요 · ${s.space.name} · #${s.tab.name}`)));
+}
+
 function activityList(t) {
   const unreadOnly = Boolean(shared(UNREAD_ONLY_KEY));
   const all = visibleAgents();
   const unread = all.filter(isUnread).length;
-  const list = (unreadOnly ? all.filter(isUnread) : all).map((a) => ({ agent: a, at: activityAt(a) }));
+  const shownSpaces = new Set(visibleSpaces().map((s) => s.id));
+  const stopped = unreadOnly ? [] : stoppedSessions().filter((s) => shownSpaces.has(s.space.id))
+    .map((s) => ({ stopped: s, at: s.at }));
+  const list = [...(unreadOnly ? all.filter(isUnread) : all).map((a) => ({ agent: a, at: activityAt(a) })), ...stopped];
   const groups = groupByDay(list);
   const since = new Map(visibleSpaces().flatMap((s) => s.tabs.map((tab) => [tab.id, tab.working_since])));
   const now = Date.now();
@@ -349,7 +371,8 @@ function activityList(t) {
       .when(groups.length > 0, (el) => el.child(div().h(1).flex_none().bg(t.border)))
       .children(groups.flatMap((g) => [
         div().id(`day-${g.label}`).px(18).pt(12).pb(4).flex_none().text_size(13).font_bold().text_color(t.muted).child(g.label),
-        ...g.items.map(({ agent, at }) => activityCard(t, agent, at, now, since.get(agent.tab) ?? null)),
+        ...g.items.map(({ agent, stopped, at }) => (stopped ? stoppedCard(t, stopped)
+          : activityCard(t, agent, at, now, since.get(agent.tab) ?? null))),
       ])));
 }
 

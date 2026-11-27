@@ -37,14 +37,15 @@ import { loadDemo } from "./demo.js";
 import { loadTilePrefixes } from "./repos.js";
 import { handleImageRequest } from "./spaceimage.js";
 import { trackActivity, fillFromLogs } from "./activity.js";
+import { renderPanelTabs, renderPreviewBar, syncPanel } from "./panel.js";
 
-const VIEWS = { topbar: renderTopbar, rail: renderRail, channels: renderChannels, header: renderHeader };
+const VIEWS = { topbar: renderTopbar, rail: renderRail, channels: renderChannels, header: renderHeader, paneltabs: renderPanelTabs };
 // herdr-app check 는 props 를 못 넘겨서 모든 부분을 나란히 그린다(크기는 레이아웃과 같게).
-const CHECK_SIZES = { topbar: [600, 40], rail: [70, 600], channels: [260, 600], dms: [260, 600], activity: [260, 600], header: [600, HEADER_HEIGHT] };
+const CHECK_SIZES = { topbar: [600, 40], rail: [70, 600], channels: [260, 600], dms: [260, 600], activity: [260, 600], header: [600, HEADER_HEIGHT], paneltabs: [390, 40] };
 const CHECK_VIEWS = { ...VIEWS, dms: (view, t) => renderChannels(view, t, "dms"), activity: (view, t) => renderChannels(view, t, "activity") };
 // 오버레이로만 여는 부분(점검 화면에는 그리지 않는다).
 const POPUPS = { "space-menu": renderSpaceMenu, "profile-menu": renderProfileMenu, "profile-name": renderProfileName,
-  "channel-menu": renderChannelMenu, "section-menu": renderSectionMenu, "name-dialog": renderNameDialog, "new-channel": renderNewChannel, "workspace-menu": renderWorkspaceMenu, "theme": renderThemePanel };
+  "channel-menu": renderChannelMenu, "section-menu": renderSectionMenu, "name-dialog": renderNameDialog, "new-channel": renderNewChannel, "workspace-menu": renderWorkspaceMenu, "theme": renderThemePanel, "preview-bar": renderPreviewBar };
 const SYNC_MS = 300;
 
 async function exists(path) {
@@ -90,7 +91,9 @@ export default class Slack extends View {
         cx.spawn(async () => { await applyBackground(slackTheme(), light); });
       });
     }
-    if (this.view === "header") cx.timer.every(SYNC_MS, (cx) => syncView(this, cx));
+    // 머리줄은 채팅/터미널 보기와 오른쪽 패널(채널을 따라 셸 바꾸기, 폭 돌리기, 탭 줄 숨기기)을 맞춘다.
+    if (this.view === "header") cx.timer.every(SYNC_MS, (cx) => { syncView(this, cx); syncPanel(this, cx); });
+    if (this.view === "paneltabs") cx.timer.every(SYNC_MS, (cx) => cx.notify());
     // 사이드바가 채널(스페이스)을 저장소별로 묶으려면 폴더마다 git 저장소를 알아야 한다.
     if (this.view === "channels") {
       watchRepos(this, cx);

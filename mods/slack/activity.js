@@ -4,7 +4,7 @@
 // Herdr 는 에이전트가 언제 바뀌었는지 시각으로 주지 않아서, 레일이 seq 가 오르는 것을 보고 적어 둔다.
 // 처음 보는 에이전트는 그 탭의 changed_at(없으면 working_since)으로 시작한다. 둘 다 없으면(앱을 켠 뒤 한 번도
 // 안 바뀐 세션) 대화 로그의 마지막 메시지 시각을 읽어 채운다(fillFromLogs).
-import { agents, spaces, shared, setShared, exec, appHome } from "herdr";
+import { agents, spaces, terminals, shared, setShared, exec, appHome } from "herdr";
 import * as fs from "fs/promises";
 
 export const ACTIVITY_KEY = "slack.activityAt";
@@ -59,7 +59,7 @@ export function timeLabel(ms) {
 
 // [{ label, items }] 최근 날짜 먼저, 날짜 안에서도 최근 먼저. 날짜 모름은 맨 아래.
 export function groupByDay(list, now = Date.now()) {
-  const sorted = [...list].sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity) || b.agent.seq - a.agent.seq);
+  const sorted = [...list].sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity) || (b.agent?.seq ?? 0) - (a.agent?.seq ?? 0));
   const groups = [];
   for (const item of sorted) {
     const label = dayLabel(item.at, now);
@@ -75,7 +75,7 @@ export function groupByDay(list, now = Date.now()) {
 //     내 말이면 "나: " 를 붙인다(슬랙 DM 미리보기처럼). seq 가 그대로면 다시 묻지 않는다
 //     (말을 보내거나 답이 끝나면 에이전트 상태가 바뀌어 seq 가 오른다). v 는 저장 형식이 바뀌면 다시 읽게 한다.
 export const LAST_PROMPT_KEY = "slack.activityLast";
-const LAST_VERSION = 3;
+const LAST_VERSION = 4;
 const asked = new Set();
 let busy = false;
 
@@ -90,6 +90,7 @@ export const lastPrompt = (a) => (shared(LAST_PROMPT_KEY) ?? {})[a.address]?.tex
 
 export async function fillFromLogs() {
   if (busy) return;
+  fillStopped();
   const bin = `${appHome()}/mods/slack-chat/bin/flockbook-modfeed`;
   if (!(await fs.exists(bin).catch(() => false))) return;
   busy = true;
@@ -119,7 +120,8 @@ export async function fillFromLogs() {
         }
       }
       const saved = shared(ACTIVITY_KEY) ?? {};
-      if (wantAt && last != null && saved[a.address] && saved[a.address].at == null) {
+      // 시각은 대화 로그의 마지막 행으로 맞춘다: 재시작 뒤 이어 붙인 순간이 '방금 활동'으로 찍히지 않게.
+      if (last != null && saved[a.address] && saved[a.address].at !== last) {
         setShared(ACTIVITY_KEY, { ...saved, [a.address]: { ...saved[a.address], at: last } });
       }
       // 사라진 에이전트의 것은 지우고, 이 에이전트의 것을 적는다(로그를 못 읽어도 seq 는 적어 다시 묻지 않게).
@@ -131,4 +133,82 @@ export async function fillFromLogs() {
   } finally {
     busy = false;
   }
+}
+
+// 멈춘 대화: Herdr 재시작으로 셸만 남은 탭(slack/resume.js 의 기록이 있는 것). 누르면 그 탭이 열리며 이어 붙는다.
+//   shared "slack.activityStopped"  { [address]: { session, at, text } }  기록 파일 끝에서 읽은 마지막 대화
+export const STOPPED_KEY = "slack.activityStopped";
+const STOPPED_VERSION = 2; // 읽는 방식이 바뀌면 올려서 다시 읽게 한다.
+
+export function stoppedSessions() {
+  const records = shared("slack.resume") ?? {};
+  const info = shared(STOPPED_KEY) ?? {};
+  const terms = new Map(terminals().map((t) => [t.address, t]));
+  const live = new Set(agents().map((a) => a.address));
+  const tabs = new Map(spaces().flatMap((s) => s.tabs.map((t) => [t.id, { tab: t, space: s }])));
+  return Object.entries(records).flatMap(([address, rec]) => {
+    const term = terms.get(address);
+    if (!term || term.state !== "live" || live.has(address) || address.includes("/")) return [];
+    const where = tabs.get(term.labels?.["herdr.tab"] ?? rec.tab);
+    if (!where) return [];
+    const got = info[address]?.session === rec.session ? info[address] : null;
+    return [{ address, rec, tab: where.tab, space: where.space, at: got?.at ?? null, said: got?.text ?? "" }];
+  });
+}
+
+// 기록 파일 끝(2MB)에서 마지막 user/assistant 메시지의 시각과 글을 읽는다. Claude 와 Codex 형식 둘 다.
+const LOG_PY = String.raw`
+import glob, json, os, sys
+from datetime import datetime
+kind, sid = sys.argv[1], sys.argv[2]
+home = os.path.expanduser("~")
+pat = home + "/.codex/sessions/**/rollout-*" + sid + ".jsonl" if kind == "codex" else home + "/.claude/projects/*/" + sid + ".jsonl"
+files = glob.glob(pat, recursive=True)
+if not files: print("{}"); sys.exit(0)
+with open(files[0], "rb") as f:
+    f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 2 * 1024 * 1024)); data = f.read()
+def ms(ts):
+    try: return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() * 1000)
+    except Exception: return None
+def texts(content, kinds):
+    if isinstance(content, str): return content
+    return "\n".join(c.get("text", "") for c in content or [] if isinstance(c, dict) and c.get("type") in kinds)
+at = text = None
+for line in reversed(data.split(b"\n")):
+    try: o = json.loads(line)
+    except Exception: continue
+    if kind == "codex":
+        p = o.get("payload") or {}
+        if o.get("type") != "response_item" or p.get("type") != "message" or p.get("role") not in ("user", "assistant"): continue
+        role, body = p["role"], texts(p.get("content"), ("input_text", "output_text"))
+    else:
+        if o.get("type") not in ("user", "assistant") or o.get("isMeta") or o.get("isCompactSummary"): continue
+        role, body = o["type"], texts((o.get("message") or {}).get("content"), ("text",))
+    if at is None: at = ms(o.get("timestamp") or "")
+    body = (body or "").strip()
+    if not body or body.startswith("<") or body.startswith("# AGENTS.md"): continue
+    text = ("나: " if role == "user" else "") + body
+    break
+print(json.dumps({"at": at, "text": text}))
+`;
+const stoppedAsked = new Set();
+let stoppedBusy = false;
+
+async function fillStopped() {
+  if (stoppedBusy) return;
+  const todo = stoppedSessions().filter((s) => !stoppedAsked.has(`${s.address}:${s.rec.session}`)
+    && ((shared(STOPPED_KEY) ?? {})[s.address]?.session !== s.rec.session
+      || (shared(STOPPED_KEY) ?? {})[s.address]?.v !== STOPPED_VERSION));
+  if (!todo.length) return;
+  stoppedBusy = true;
+  try {
+    for (const s of todo) {
+      stoppedAsked.add(`${s.address}:${s.rec.session}`);
+      const r = await exec("python3", ["-c", LOG_PY, s.rec.kind ?? "claude", s.rec.session], { timeout: 5000 }).catch(() => null);
+      let got = {};
+      try { got = JSON.parse(r?.stdout ?? "{}"); } catch {}
+      setShared(STOPPED_KEY, { ...(shared(STOPPED_KEY) ?? {}),
+        [s.address]: { session: s.rec.session, v: STOPPED_VERSION, at: got.at ?? null, text: promptLine(got.text ?? "") } });
+    }
+  } finally { stoppedBusy = false; }
 }

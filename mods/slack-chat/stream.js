@@ -14,7 +14,7 @@ const CHROME_BANNER = /^\s*(?:(?:New(?:\s+activity)?\s*·\s*)?↓\s*(?:Back to b
 const CLAUDE_STATUS = /^(?:[·✻✽✶✳✢]\s+\S.*(?:\u2026|\.\.\.|\besc to interrupt\b)|• (Working|Waiting|Interrupted)\b)/;
 // The full-screen view's one-line summaries of tool calls ("Running 1 shell
 // command…", "Read 2 files"): a command running, not text.
-const SUMMARY = /^(Running|Ran|Reading|Read|Searching|Searched|Listing|Listed|Writing|Wrote|Editing|Edited|Updating|Updated|Fetching|Fetched|Calling|Called|Creating|Created|Stopping|Stopped)\b.*\b(commands?|files?|patterns?|director(y|ies)|tools?|agents?|pages?|tasks?|searches)\b|^\d+ tool calls?\b/i;
+const SUMMARY = /^(Running|Ran|Reading|Read|Searching|Searched|Listing|Listed|Writing|Wrote|Editing|Edited|Updating|Updated|Fetching|Fetched|Calling|Called|Creating|Created|Stopping|Stopped)\b.*\b(commands?|files?|patterns?|director(y|ies)|tools?|agents?|pages?|tasks?|searches|times)\b|^\d+ tool calls?\b|^(Calling|Called)\s+[\w.-]+(\s+\d+\s+times?)?(…|\.\.\.|,|\s*\(|\s*$)/i;
 
 // { kind: "text", text } | { kind: "run", title, out: [lines], time } | null
 const AGY_SPINNER = /^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷]\s+(.+)$/;
@@ -227,6 +227,14 @@ export function liveSnapshot(screen, kind) {
   const lines = (screen ?? "").split("\n").filter((l) => !l.startsWith("[hc]"));
   if (kind === "agy") return agyLiveSnapshot(lines);
   const k = kind === "codex" ? CODEX : CLAUDE;
+  // Claude blinks the "⏺ " of a tool summary while it runs ("⏺ Calling Atlassian 2 times…"), so
+  // every other frame the line starts with two spaces. Put the mark back on a summary line that
+  // starts its own paragraph, so both frames read the same and the chat doesn't flicker.
+  if (kind !== "codex") for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const prev = i > 0 ? lines[i - 1] : "";
+    if (/^  \S/.test(l) && SUMMARY.test(l.trim()) && (!prev.trim() || k.prompt.test(prev))) lines[i] = k.mark + l.slice(2);
+  }
   // The message box at the bottom: its rule line (Claude) or its prompt (Codex).
   let end = lines.length;
   if (kind === "codex") { for (let i = lines.length - 1; i >= 0; i--) if (/^›(?:\s|$)/.test(lines[i])) { end = i; break; } }
@@ -321,6 +329,7 @@ function textOf(block) {
 // A running tool: its title (its elapsed time split off) and its output lines.
 function runOf(title, body) {
   let time = null;
+  title = title.replace(/\s*\((?:ctrl|cmd|alt)\+\w+ to [^)]*\)\s*$/i, "");
   const tm = /\s+·\s+(\d+[hms](?: \d+[ms])*)$/.exec(title);
   if (tm) { time = tm[1]; title = title.slice(0, tm.index); }
   // Output lines wrap under where the first one's text starts.

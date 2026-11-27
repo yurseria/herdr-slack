@@ -48,7 +48,7 @@ gradient from the top-left corner, `#9C0000` to `#070C52`.
       session title, or folder · branch), then a 채팅 | 터미널 switch, an agent count, split (terminal
       view only; the chat is one conversation, nothing to split), search and ⋮.
     - Tab row: each of the channel's sessions as a tab (program icon + session title, white with a 2px
-      underline when chosen), then 파일 및 링크, then +.
+      underline when chosen), then +. Pinned at the right end: 파일 및 링크 and 터미널 (the right panel).
   - **Conversation** (`#1a1d21`)
     - Messages: 36px rounded-square avatars, a bold name (Claude Code in `#d97757`, with a grey "APP"
       badge), the time ("오후 2:13"), then the text. Messages from one author in a row stack under
@@ -59,8 +59,13 @@ gradient from the top-left corner, `#9C0000` to `#070C52`.
       quote, code, code block); the box with "#channel에 메시지 보내기"; a bottom bar with + (attach),
       emoji, @, / and a send button.
     - Under the composer, a 12px line: "**Claude Code** 님이 입력 중…".
-  - **Files panel** (right, 368px, hidden until toggled): Herdr's files and changes panels.
-- **Notifications**: a 360×72 card at the top right of the window, under the channel header.
+  - **Right panel** (hidden until toggled; one at a time with the thread pane):
+    - 파일 및 링크 (368px): a 40px tab row (미리보기 · 파일, a maximize button in 미리보기, ×) over a
+      stack of 미리보기 (markdown/text/diff viewer for links and files) and 파일 (the channel folder's
+      tree, with a "바뀐 파일만 · N" toggle).
+    - 터미널 (560px): the channel's own shell in its folder, 12px text, no tab row.
+- **Notifications**: a 360×72 card at the top right of the chat column, under the tab row (left of an
+  open thread pane).
 
 ## How it behaves
 
@@ -99,7 +104,9 @@ starts again from the left. It moves only while the agent works and the chat is 
   chat. Each card has three lines: the agent's name (bold only when unread, 14px) and time, then the
   last message in the conversation (14px; your own prefixed "나: ", markdown stripped, pasted image
   paths as [이미지]), then status · project · #tab in bold 12.5px, 6px lower. A red dot on the first
-  line marks unread.
+  line marks unread. Times are the last message's time in the log, so resuming a session doesn't
+  move it to the top. Sessions stopped by a core restart stay in the list, faded, with "멈춤 · 누르면
+  이어서 열어요": clicking one opens its tab, which resumes it.
   The 읽지 않은 항목 quick link opens it filtered. 파일 toggles the files panel, 더 보기 opens the palette.
 - Workspace tile and sidebar title: rename the workspace or set its picture (right-click, or drop an
   image on the tile). Profile avatar: right-click to set your name and picture; they show on your
@@ -115,7 +122,12 @@ starts again from the left. It moves only while the agent works and the chat is 
     notification and keep the dialog open.
   - Without a folder: a tab in **#일반** (the home folder's space, created if missing), named after
     the first message.
-  - The header's + opens the same dialog for a new tab in this channel.
+    - A git link in its box (https, ssh, `git@host:owner/repo`, or `host/owner/repo`; web links to a
+    file or branch are cut back to the repository) clones into `<작업 폴더>/<repo>` and opens the channel
+    there. A confirm box first shows where it lands; an existing clone of the same repository is reused,
+    any other folder in the way is an error. Clone never asks for a password (`GIT_TERMINAL_PROMPT=0`,
+    ssh `BatchMode`).
+- The header's + opens the same dialog for a new tab in this channel.
 - The moon opens **테마**. 화면 모드 (시스템 · 라이트 · 다크) at the top writes `appearance` in Herdr's
   `settings.json` (시스템 removes it), the only place that choice lives; the whole window follows. It has 7 presets (크림슨 미드나잇, 오버진, 제이드, 라군, 바바라, 무드 인디고,
   그래파이트) and four colors to set as hex or with the macOS color picker: 시스템 탐색 (window), 선택된
@@ -126,6 +138,18 @@ starts again from the left. It moves only while the agent works and the chat is 
 **Conversation**
 - Entering an agent tab opens the conversation (waiting up to 20s for a new agent to start). 터미널
   shows the terminal; the choice is kept per tab. Middle-click a tab to close it.
+- After Herdr's core restarts, terminals come back as bare shells and their agents are gone. Opening
+  such a tab shows "지난 대화를 불러오는 중…" and types `claude <same options> --resume <session>`
+  (or `codex resume <session>`) into the shell, then the conversation shows as before. It only does so
+  when the shell was recreated (its pid changed) and runs nothing; a Claude you quit yourself stays
+  quit. After 45s without an agent it gives up with a notification and shows the terminal.
+- **Right panel**: 파일 및 링크 and 터미널 in the tab row (and 파일 in the rail) toggle it; the other
+  button switches it. Opening the panel closes the thread pane and opening a thread hides the panel.
+  - 파일: click a file to open it in 미리보기 (markdown rendered, others as source); a ← before the
+    file name goes back to the tree. "바뀐 파일만" shows only files `git status` reports.
+  - 미리보기's maximize opens the preview in a large window.
+  - 터미널 starts a shell per channel (`hc run --bg --keep --no-parent`, label `slack.panel=<space>`,
+    no Herdr tab), and swaps to that channel's shell when you change channels.
 - Hovering a message darkens its row and floats an icon toolbar at its top right: copy, plus "스레드에
   댓글 달기" on replies or "수정해서 다시 보내기" on yours, each with a tooltip.
 - A thread link or the thread button opens the thread pane on the right (300–900px; drag its left
@@ -181,10 +205,12 @@ starts again from the left. It moves only while the agent works and the chat is 
           - `conversation-view` stack: `main` (`{tab: "active"}`), and `conversation-page` (the
             template page, a column with the `conversation-chat` block: `slack-chat`,
             `props {presentation: true}`)
-          - `panel` column 368 (hidden): `panel-body` stack of `files` / `changes`
+          - `panel` column 368 (hidden): `panel-tabs` block 40 (`slack`, view `paneltabs`) and the
+            `panel-body` stack of `files` (`slack-files`) / `changes` / `chat-preview`; the terminal
+            adds `panel-term-<space>` blocks (`content.terminal`, `font_size 12`) to that stack.
     - `pad-right` 6
   - `pad-bottom` 6
-- Blocks of mod `slack` take `props.view`: `topbar` | `rail` | `channels` | `header`.
+- Blocks of mod `slack` take `props.view`: `topbar` | `rail` | `channels` | `header` | `paneltabs`.
 
 **Mods**
 - `mods/slack`:
@@ -201,11 +227,20 @@ starts again from the left. It moves only while the agent works and the chat is 
     `slack.activityAt`); sessions with no time yet take the tab's `changed_at`, else the last row time
     the Flockbook sidecar reads from their log. Filter in shared `slack.activityUnread`. The last
     message per agent is read the same way when its `seq` changes, into shared `slack.activityLast`,
-    using its own sidecar cache (`data/slack/flockbook-activity-cache.json`).
+    using its own sidecar cache (`data/slack/flockbook-activity-cache.json`); its last row time
+    replaces the recorded time. Stopped sessions (from `slack.resume`) are read straight from the log
+    file's last 2MB with `python3` into shared `slack.activityStopped`.
   - `newchannel.js`: folder search runs `find ~ -maxdepth 5`, pruning hidden folders (except
     `.config`), `node_modules`, `Library`, `*.app`, `*.photoslibrary` and build folders.
   - `theme.js`, `themepanel.js`, `gradient.py`.
   - `chatview.js`, `presentation.js`, `backstage.js`, `identity.js`: switching chat ↔ terminal.
+  - `layoutlock.js`: one queue for every layout change (chat ↔ terminal, panel). `panel.js` reads the
+    layout again inside it, so starting a shell can't write back an old copy over the chat page.
+  - `panel.js`: the right panel (tab row, terminal shells per channel in shared `slack.panelTerms`,
+    width before widening in `slack.panelW`, the big preview window).
+  - `resume.js`: every 15s, records each live Claude terminal's session id
+    (`~/.claude/sessions/<pid>.json`), options, shell pid and title in shared `slack.resume`, and
+    resumes it after a core restart; shared `slack.resuming` drives the chat's loading text.
   - `demo.js`: demo mode for screenshots. With `data/slack/demo.json`
     (`{"folder": "<home>/herdr-demo", "workspace": "Acme", "profile": "Jamie"}`), only spaces under
     that folder and their agents show, and the workspace and profile show those names without
@@ -219,9 +254,13 @@ starts again from the left. It moves only while the agent works and the chat is 
 - `mods/slack-chat-file`: the editor and image dialog behind `/memory`, `/config` and file previews
   (from Chat Plus).
 - `mods/slack-toast`: reopens each notification as a `kind: "window"` overlay at the top right of the
-  chat column, 104px down: left of the Files panel when it is open (layout node `panel`), so the
-  panel's tabs stay visible.
-- Shipped mods used: `files`, `changes`, `menu`, `picker`, `worktree`; `project-open` if installed.
+  chat column, under the header: left of the right panel when it is open (layout node `panel`) and of
+  the thread pane (its width in shared `slack.threadW`, written by `slack-chat`).
+- `mods/slack-files`: a copy of Herdr's shipped `files` with Korean labels, a 바뀐 파일만 toggle, and
+  clicks that open the file in `chat-preview` (request in shared `chat.preview`, `from: "files"`).
+- `mods/chat-preview`: Chat Plus's preview (MIT, see its `LICENSE` and `NOTICE.md`), plus the ← back
+  to the file tree.
+- Shipped mods used: `changes`, `menu`, `picker`, `worktree`; `project-open` if installed.
 - `herdr` functions: `spaces`, `agents`, `panes`, `terminals`, `layout`, `shared`/`setShared`, `run`,
   `openOverlay`/`closeOverlay`, `exec`, `knownAgents`, `pickFolder`, `notify`, `window`, `home`,
   `appHome`, `setAgentOrder`.
@@ -236,11 +275,12 @@ starts again from the left. It moves only while the agent works and the chat is 
 - **What it runs and reads**:
   - Programs: `git` in each space folder, `find` over your home folder (new-channel dialog only),
     `python3`, `sips`, `osascript`, `hc`, `ps`, and `mods/slack-chat/bin/flockbook-modfeed`.
-  - Files it reads: agent logs under `~/.claude` and `~/.codex`.
+  - Files it reads: agent logs under `~/.claude` and `~/.codex`, and `~/.claude/sessions/*.json`.
   - Files it reads: `data/slack/tile-prefixes.json` (optional, yours; not part of the layout).
   - Files it writes: `layouts/slack.json` (the theme background), `backgrounds/slack-*.png`,
     `data/slack/` (pictures) and `data/slack-chat/` (sidecar cache).
-  - 새 worktree 생성 runs `git worktree add` in the chosen repository.
+  - 새 worktree 생성 runs `git worktree add` in the chosen repository; a git link runs `git clone`.
+  - Resuming types `claude … --resume <id>` / `codex resume <id>` into a recreated, idle shell.
   - No network access, apart from what Chat Plus does for Claude and Codex.
 - **Light and dark**: the whole window follows. In light, the window background is the theme's colors
   mixed 86% with white (`windowColors` in `theme.js`), the bar, rail and sidebar use dark text and
@@ -273,6 +313,12 @@ starts again from the left. It moves only while the agent works and the chat is 
   colors and one direction.
 - Some controls in Slack have no counterpart and are left out: huddles, canvases, pins, reactions.
 - Herdr gives no time for an agent's last activity, hence `activity.js`'s own record.
+- `layout.set` replaces the whole tree. Two timers each building a new tree from their own copy let the
+  panel's terminal undo a chat page just selected, hence `layoutlock.js`. Don't nest `withLayout`.
+- Hiding a block stops its timers, so panel sync runs from the header's timer, not the panel tab row.
+- A Claude you quit with /exit leaves the same shell (same pid), so `resume.js` tells it apart from a
+  restart by the shell's pid. `~/.claude/sessions/<pid>.json` is deleted when Claude exits, so a
+  session not recorded before the restart can't be found that way.
 - The sidecar answers relative to its cache file, so two callers must not share one: sharing let the
   activity list's reads cut the chat's first preview down to a few rows.
 - The chat's log reader waits on a folder watch with a 15-second fallback timer. Create that wait

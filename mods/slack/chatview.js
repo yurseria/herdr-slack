@@ -3,6 +3,8 @@
 // 에이전트가 있는 탭으로 오면 처음엔 채팅으로 연다. 사용자가 고른 쪽은 탭마다 기억한다.
 import { layout, panes, terminals, spaces, run, notify } from "herdr";
 import { openChat, showTerminal, findNode, activePage, pageMeta, presentationPane } from "./presentation.js";
+import { withLayout, layoutBusy } from "./layoutlock.js";
+import { recordSessions, resumePane } from "./resume.js";
 
 const STACK = "conversation-view";
 // 탭으로 옮겨 온 뒤 에이전트가 나타나기를 기다리는 시간(새 채널의 Claude 가 뜨는 동안).
@@ -36,7 +38,7 @@ function go(state, cx, work) {
   if (state.switching) return;
   state.switching = true;
   cx.spawn(async (cx) => {
-    try { await work(); } catch (error) {
+    try { await withLayout(work); } catch (error) {
       notify({ title: "보기를 바꾸지 못했어요", body: String(error?.message ?? error), level: "error" });
     }
     state.switching = false;
@@ -55,14 +57,21 @@ export function selectView(state, mode, cx) {
 
 // 주기적으로 불린다. 탭이 바뀐 순간에만 보기를 고르고, 다른 탭의 채팅이 남아 있으면 터미널로 돌린다.
 export function syncView(state, cx) {
-  if (state.switching) return;
+  if (state.switching || layoutBusy()) return;
   const tree = layout();
   const stack = findNode(tree, STACK);
   if (!stack) return;
   const tab = activeTab();
   const current = tab?.id ?? null;
   const owner = presentationPane(pageMeta(activePage(tree)) ?? {}, panes());
+  recordSessions(state, cx);
   if (state.tab !== current) {
+    // Herdr 재시작으로 셸만 남은 탭: 지난 대화를 이어 붙이는 동안 채팅 화면("불러오는 중")을 보인다.
+    const reviving = current && !agentPane(current) && resumePane(state, current, cx);
+    if (reviving) {
+      if (!(owner && owner.pane === reviving.pane)) go(state, cx, () => openChat(target(reviving)));
+      return;
+    }
     const pane = current && agentPane(current);
     // 새로 연 채널은 에이전트가 자기를 알리기까지 몇 초 걸린다. 그동안은 결정을 미루고 다시 본다.
     if (!pane && current && state.waitTab !== current) { state.waitTab = current; state.waitSince = Date.now(); }

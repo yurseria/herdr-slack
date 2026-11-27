@@ -134,6 +134,19 @@
                       "type": "column",
                       "children": [
                         {
+                          "id": "panel-tabs",
+                          "type": "block",
+                          "content": {
+                            "mod": "slack",
+                            "props": {
+                              "view": "paneltabs"
+                            }
+                          },
+                          "size": {
+                            "px": 40
+                          }
+                        },
+                        {
                           "id": "panel-body",
                           "type": "stack",
                           "children": [
@@ -141,7 +154,7 @@
                               "id": "files",
                               "type": "block",
                               "content": {
-                                "mod": "files"
+                                "mod": "slack-files"
                               }
                             },
                             {
@@ -149,6 +162,13 @@
                               "type": "block",
                               "content": {
                                 "mod": "changes"
+                              }
+                            },
+                            {
+                              "id": "chat-preview",
+                              "type": "block",
+                              "content": {
+                                "mod": "chat-preview"
                               }
                             }
                           ],

@@ -305,6 +305,15 @@ const ago = (ms) => {
   return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
 
+function findLayoutNode(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = findLayoutNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 export default class Chat extends View {
   init(_props, cx) {
     // The agent comes in props; localStorage is shared by copies with equal props.
@@ -1768,12 +1777,14 @@ export default class Chat extends View {
 
   openWorkThread(turn, cx) {
     this.thread = this.thread?.kind === "work" && this.thread.turn === turn ? null : { kind: "work", turn };
+    if (this.thread) this.hidePanelForThread();
     cx.notify();
   }
 
   openReplyThread(e, cx) {
     if (!this.replyThreads.has(e.key)) this.replyThreads.set(e.key, []);
     this.thread = { kind: "reply", key: e.key, text: e.text, at: e.sentAt };
+    this.hidePanelForThread();
     this.sideInput.focus();
     cx.notify();
   }
@@ -1927,6 +1938,20 @@ export default class Chat extends View {
       .child(v_flex().id("thread-scroll").flex_1().min_h(0).px(16).py(14).overflow_y_scroll().child(body))
       .when(th.kind === "reply", (el) => el.child(div().p(12).child(v_flex().rounded(8).border_1().border_color(t.input).bg(t.background)
         .child(Textarea.new(this.sideInput).w_full().px(12).py(9).border_0().bg(t.background).text_size(14).text_color(t.foreground)))));
+  }
+
+  // The Slack layout shows one thing on the right at a time: the thread pane or the file panel
+  // (preview, files, terminal). Opening a thread hides the panel; the panel appearing closes the thread.
+  hidePanelForThread() {
+    const panel = findLayoutNode(layout(), "panel");
+    if (panel && !panel.hidden) run("layout.hide", { id: "panel" });
+  }
+
+  closeThreadForPanel() {
+    const panel = findLayoutNode(layout(), "panel");
+    const shown = Boolean(panel) && !panel.hidden;
+    if (shown && this.panelShown === false && this.thread) this.thread = null;
+    this.panelShown = shown;
   }
 
   threadWidth() {
@@ -4640,12 +4665,24 @@ export default class Chat extends View {
     if (!this.dialog && !this.myPane()) return v_flex().id("root").size_full().p(20)
       .child("Chat owner context is missing or ambiguous. Open a new chat from its agent terminal; no terminal has been selected.");
     if (!this.dialog && !this.chatVisible()) return div().id("root").size_full();
+    // slack-toast puts notifications at the chat column's top right, left of an open thread pane.
+    if (!this.dialog && this.slackLook) {
+      this.closeThreadForPanel();
+      const threadW = this.thread ? this.threadWidth() : 0;
+      if (shared("slack.threadW") !== threadW) setShared("slack.threadW", threadW);
+    }
     const t = theme();
     const term = this.term ? this.terminal() : null;
     this.syncAsking?.();
     if (!this.dialog && !this.term) {
       return v_flex().id("root").size_full().bg(t.background).items_center().justify_center().text_color(t.dim)
         .child(`No agent here. Press ${shortcut("⇧N")} for a new chat.`);
+    }
+    // slack 이 Herdr 재시작 뒤 셸에 지난 Claude 대화를 이어 붙이는 동안: 셸 대신 이 문구만 보인다.
+    if (!this.dialog && Date.now() - (shared("slack.resuming")?.[this.term] ?? 0) < 60000 && !this.t?.entries?.length) {
+      return v_flex().id("root").size_full().bg(t.background).items_center().justify_center().gap(6)
+        .child(div().text_size(15).text_color(t.foreground).child("지난 대화를 불러오는 중…"))
+        .child(div().text_size(12).text_color(t.dim).child("Herdr 를 다시 켜서 멈췄던 대화를 이어 붙이고 있어요."));
     }
     const titleIdentity = codexTitleIdentity(term);
     const changedTitle = titleIdentity && this.file && !titleMatchesFile(titleIdentity, this.file);

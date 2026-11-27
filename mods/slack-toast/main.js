@@ -1,7 +1,7 @@
 // Slack 레이아웃의 알림. Herdr 는 알림을 늘 오른쪽 아래에 띄우므로, 그 자리에 열리면 곧바로
-// 채팅 칸의 오른쪽 위(채널 머리줄 아래)에 창으로 다시 열고 원래 것은 닫는다. 창 너비는 위 띠가 남긴
-// shared "slack.windowW" 로 알고, 오른쪽 파일 패널(layout 의 "panel")이 열려 있으면 그 폭만큼 왼쪽으로
-// 비켜서 패널의 탭을 가리지 않는다. 누르면 할 일(그 에이전트로 가기)을 하고 닫힌다.
+// 채팅 칸(채널 이름 줄과 탭 줄 아래)의 오른쪽 위에 창으로 다시 열고 원래 것은 닫는다. 창 너비는 위 띠가 남긴
+// shared "slack.windowW" 로 알고, 채팅 칸의 오른쪽 끝은 창 오른쪽 여백, (열려 있으면) 파일 패널 폭,
+// 그리고 slack-chat 이 남긴 스레드 칸 폭(shared "slack.threadW")을 빼서 잰다. 누르면 할 일(그 에이전트로 가기)을 하고 닫힌다.
 import { View, div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { props, closeOverlay, openOverlay, run, theme, shared, checking, layout, settings } from "herdr";
@@ -9,7 +9,6 @@ import { props, closeOverlay, openOverlay, run, theme, shared, checking, layout,
 const WIDTH = 360;
 const HEIGHT = 72;
 const MARGIN = 16;
-const TOP = 104;          // 위 띠(44) + 채널 머리줄 윗줄(52) 아래
 const DEFAULT_MS = 6000;
 const PAD_RIGHT = 6;      // 레이아웃 오른쪽 여백(pad-right)
 
@@ -22,12 +21,32 @@ function findNode(node, id) {
   return null;
 }
 
-// 채팅 칸의 오른쪽 끝(창 왼쪽에서 잰 px): 창 오른쪽 여백과, 열려 있으면 파일 패널 폭을 뺀다.
-function chatRight(windowW) {
-  const panel = findNode(layout(), "panel");
+// 레이아웃 노드의 px 높이(숨었으면 0, 크기가 없으면 fallback).
+function heightOf(id, fallback) {
+  const node = findNode(layout(), id);
+  if (node?.hidden) return 0;
+  return Number.isFinite(node?.size?.px) ? node.size.px : fallback;
+}
+
+// 레이아웃 노드의 px 폭(숨었거나 폭이 없으면 0).
+function widthOf(id) {
+  const node = findNode(layout(), id);
+  return node && !node.hidden && Number.isFinite(node.size?.px) ? node.size.px : 0;
+}
+
+// 채팅 칸의 위쪽 끝 아래(창 위에서 잰 px): 위 띠와 채널 머리줄(이름 줄 + 탭 줄) 아래로 MARGIN 만큼.
+function chatTop() {
   const zoom = settings()?.zoom ?? 1;
-  const panelW = panel && !panel.hidden && Number.isFinite(panel.size?.px) ? panel.size.px * zoom : 0;
-  return windowW - PAD_RIGHT * zoom - panelW;
+  return (heightOf("topbar", 44) + heightOf("header", 92) + MARGIN) * zoom;
+}
+
+// 채팅 칸의 오른쪽 끝(창 왼쪽에서 잰 px): 창 오른쪽 여백, 파일 패널, 스레드 칸을 뺀 자리.
+// 왼쪽 끝(레일+사이드바)보다 왼쪽으로는 가지 않는다.
+function chatRight(windowW) {
+  const zoom = settings()?.zoom ?? 1;
+  const thread = Number(shared("slack.threadW")) || 0;
+  const left = (widthOf("rail") + widthOf("sidebar")) * zoom;
+  return Math.max(left + WIDTH + MARGIN * zoom, windowW - (PAD_RIGHT + widthOf("panel") + thread) * zoom);
 }
 const DOT = { error: "blocked", warning: "working", success: "done", info: "accent" };
 
@@ -48,7 +67,7 @@ export default class SlackToast extends View {
       const w = shared("slack.windowW") ?? 1200;
       const { overlay, ...rest } = p;
       openOverlay({ mod: "slack-toast", kind: "window", key: "slack-toast", frame: "none", width: WIDTH, height: HEIGHT,
-        at: { x: Math.max(MARGIN, chatRight(w) - WIDTH - MARGIN), y: TOP }, props: { ...rest, placed: true } });
+        at: { x: Math.max(MARGIN, Math.round(chatRight(w) - WIDTH - MARGIN * (settings()?.zoom ?? 1))), y: Math.round(chatTop()) }, props: { ...rest, placed: true } });
       closeOverlay(overlay);
       return;
     }

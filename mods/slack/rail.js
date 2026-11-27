@@ -2,7 +2,7 @@
 // 아래에 + · 모양 설정 · 내 아바타. 채널이 스페이스가 되었으므로 워크스페이스는 창 전체 하나다.
 import { div, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, openOverlay, shared, setShared, layout } from "herdr";
+import { run, openOverlay, shared, setShared } from "herdr";
 import { initials } from "./look.js";
 import { VIEW_KEY, sidebarView, icon, mentionBadge, glass, strong } from "./parts.js";
 import { isImagePath, setWorkspaceImage, profile } from "./spaceimage.js";
@@ -12,21 +12,13 @@ import { profileMenuOverlay, profileName } from "./profilemenu.js";
 import { newChannelOverlay } from "./newchannel.js";
 import { visibleAgents } from "./demo.js";
 import { themeOverlay } from "./themepanel.js";
+import { panelButtonOn, togglePanel } from "./panel.js";
 import { slackTheme } from "./theme.js";
 
 const WIDTH = 72;
 const TILE = 40;
 const NAV = 36;
 const TEXT_SIZE = { 1: 18, 2: 15, 3: 13 };
-
-function findNode(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = findNode(child, id);
-    if (found) return found;
-  }
-  return null;
-}
 
 // 워크스페이스 타일: 누르면 홈, 오른쪽 클릭은 이름·그림 메뉴, 그림 파일을 끌어 놓으면 그림으로.
 function workspaceTile(view, t) {
@@ -84,7 +76,6 @@ export function renderRail(view, t) {
   const all = visibleAgents();
   const current = sidebarView(shared);
   const attention = all.filter((a) => a.status === "blocked" || a.status === "done").length;
-  const panel = findNode(layout(), "panel");
   const go = (name) => (_e, cx) => { setShared(VIEW_KEY, name); cx.notify(); };
   return v_flex().id("rail").size_full().pt(4).pb(14).items_center()
     .child(workspaceTile(view, t))
@@ -92,7 +83,7 @@ export function renderRail(view, t) {
       .child(navButton(t, "home", "house", "홈", current === "home", 0, go("home")))
       .child(navButton(t, "dms", "messages", "DM", current === "dms", 0, go("dms")))
       .child(navButton(t, "activity", "bell", "내 활동", current === "activity", attention, go("activity")))
-      .child(navButton(t, "files", "files", "파일", Boolean(panel) && !panel.hidden, 0, () => run("layout.toggle", { id: "panel" })))
+      .child(navButton(t, "files", "files", "파일", panelButtonOn("files"), 0, () => togglePanel("files")))
       .child(navButton(t, "more", "more", "더 보기", false, 0, () => run("app.palette"))))
     .child(div().flex_1())
     .child(v_flex().flex_none().gap(14).items_center()

@@ -2,6 +2,7 @@
 //   scope "space"  사이드바에서: 새 채널 = 새 스페이스(그 폴더가 git 저장소면 저장소 섹션에 들어간다)
 //   scope "tab"    머리줄 + 에서: 지금 채널(스페이스) 안의 새 세션 탭
 // 작업 폴더는 지금 채널의 폴더가 기본이고, 직접 적거나 '폴더 고르기…'로 바꿀 수 있다.
+// git 저장소 링크를 적으면 작업 폴더 아래 <저장소 이름> 폴더로 clone 하고, 그 폴더에서 연다.
 // 이 레이아웃에서는 에이전트 채널이 열리면 메시지(채팅) 보기로 연다(chatview.js).
 import { div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Popup, ScrollHandle } from "gpui-base";
@@ -42,7 +43,7 @@ export function matchDirs(dirs, query) {
 const TERMINAL = { key: "terminal", name: "터미널", run: null };
 
 // folder: 작업 폴더를 미리 채워 연다(프로젝트 섹션의 + 버튼).
-export const newChannelOverlay = (scope = "tab", folder = null) => ({ mod: "slack", kind: "dialog", width: 520, height: 510, props: { view: "new-channel", scope, ...(folder ? { folder } : {}) } });
+export const newChannelOverlay = (scope = "tab", folder = null) => ({ mod: "slack", kind: "dialog", width: 520, height: 580, props: { view: "new-channel", scope, ...(folder ? { folder } : {}) } });
 
 const tilde = (path) => {
   const h = home();
@@ -109,6 +110,54 @@ async function addWorktree(folder, branch) {
   return path;
 }
 
+// ---- git 저장소 링크 → clone ----
+// https://, ssh://, git@host:owner/repo, 그리고 host.com/owner/repo 처럼 앞을 뺀 링크(https 로 본다).
+export function cloneUrl(text) {
+  const raw = String(text ?? "").trim();
+  if (!raw) return null;
+  // 웹에서 연 파일·브랜치 화면 링크(/tree/…, /blob/…, GitLab 의 /-/…)는 저장소 링크로 줄인다.
+  const trim = (u) => u.replace(/[?#].*$/, "").replace(/\/(?:-\/)?(?:tree|blob|commits?|pulls?|issues|merge_requests)(?:\/.*)?$/, "").replace(/\/-\/.*$/, "").replace(/\/+$/, "");
+  if (/^(https?|ssh|git):\/\//i.test(raw) || /^[\w.-]+@[\w.-]+:\S+/.test(raw)) return trim(raw);
+  if (/^[\w-]+(\.[\w-]+)+\/[\w.-]+\/[\w.-]+/.test(raw)) return trim(`https://${raw}`);
+  return null;
+}
+// 링크의 마지막 이름에서 .git 을 뗀 것(cloneUrl 을 거친 링크).
+export function repoNameOf(url) {
+  const name = (url.replace(/\/+$/, "").split(/[/:]/).pop() ?? "").replace(/\.git$/, "");
+  return /^[\w.-]+$/.test(name) && name !== "." && name !== ".." ? name : null;
+}
+const sameRemote = (a, b) => {
+  const norm = (u) => u.trim().replace(/\.git$/, "").replace(/\/+$/, "").replace(/^[\w.-]+@([\w.-]+):/, "$1/").replace(/^\w+:\/\/([^@/]+@)?/, "").toLowerCase();
+  return norm(a) === norm(b);
+};
+
+// clone 할 자리와 그 자리의 상태: "new"(새로 받음), "reuse"(같은 저장소가 이미 있음), "taken"(다른 것이 있음).
+async function clonePlan(parent, url) {
+  const name = repoNameOf(url);
+  if (!name) return { error: `저장소 이름을 알 수 없는 링크예요: ${url}` };
+  const path = `${parent.replace(/\/+$/, "")}/${name}`;
+  if (!(await fs.exists(path).catch(() => false))) return { path, state: "new" };
+  const origin = await git(path, ["remote", "get-url", "origin"], 5000);
+  return { path, state: origin.ok && sameRemote(origin.out, url) ? "reuse" : "taken" };
+}
+
+// parent 아래 <저장소 이름> 으로 clone 하고 그 경로를 돌려준다. 이미 같은 저장소가 있으면 그 폴더를 그대로 쓴다.
+async function cloneInto(parent, url) {
+  const name = repoNameOf(url);
+  if (!name) throw new Error(`저장소 이름을 알 수 없는 링크예요: ${url}`);
+  const path = `${parent.replace(/\/+$/, "")}/${name}`;
+  if (await fs.exists(path).catch(() => false)) {
+    const origin = await git(path, ["remote", "get-url", "origin"], 5000);
+    if (origin.ok && sameRemote(origin.out, url)) return path;
+    throw new Error(`이미 있는 폴더예요: ${tilde(path)}`);
+  }
+  // 비밀번호를 물으면 창 없이 멈추므로 묻지 않고 실패하게 한다(ssh 키·자격 증명 도우미는 그대로 쓴다).
+  const r = await exec("env", ["GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes", "git", "clone", "--", url, path], { cwd: parent, timeout: 600000 })
+    .catch((e) => ({ code: 1, stderr: String(e?.message ?? e) }));
+  if (r.code !== 0) throw new Error((r.stderr || r.stdout || "git clone 실패").trim().split("\n").slice(-3).join("\n"));
+  return path;
+}
+
 // 폴더가 속한 worktree 의 루트(git 이 아니면 폴더 그대로).
 async function worktreeRoot(folder) {
   const r = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, timeout: 5000 }).catch(() => null);
@@ -136,6 +185,8 @@ export function initNewChannel(view, cx) {
   view.folderInput = InputState.new({ ...(given ? { value: tilde(given) } : {}), placeholder: props()?.scope === "space"
     ? "폴더 검색 또는 경로 입력 · 비우면 #일반 채널에 탭으로 추가"
     : `폴더 검색 또는 경로 입력 · 비우면 ${tilde(view.defaultFolder)}` });
+  view.repoInput = InputState.new({ placeholder: "비우면 clone 하지 않아요 · 작업 폴더 아래 <저장소 이름> 으로 받아요" });
+  view.repoInput.on("submit", (_e, cx2) => view.create(cx2));
   view.nameInput = InputState.new({ placeholder: props()?.scope === "space" ? "비우면 브랜치 이름으로 보여요" : "비우면 세션 제목으로 보여요" });
   view.makeWorktree = false;
   // 이름을 적어야 '새 worktree 생성'을 고를 수 있다(이름이 곧 브랜치).
@@ -173,12 +224,30 @@ export function initNewChannel(view, cx) {
   // 폴더를 미리 채워 열었으면 바로 첫 메시지를 쓰게 한다.
   if (given) view.taskInput.focus(); else view.folderInput.focus();
   // cx 는 부른 쪽(클릭·Enter)의 것을 받는다(init 의 cx 를 붙잡아 두지 않는다).
-  view.create = (cx) => {
+  // git 링크가 있으면 먼저 받을 자리를 확인창으로 보여 주고(view.confirm), 확인하면 다시 불러 진행한다.
+  // 확인창이 떠 있는 동안 입력칸에서 Enter 를 누르면 확인으로 본다.
+  view.create = (cx, confirmed = Boolean(view.confirm)) => {
     if (view.creating) return;
     const typed = view.folderInput.value().trim();
+    const repoText = view.repoInput.value().trim();
+    const url = cloneUrl(repoText);
+    if (repoText && !url) { notify({ title: "git 저장소 링크가 아니에요", body: repoText, level: "error" }); return; }
+    // clone 은 받을 자리를 정해야 한다: 사이드바의 새 채널에서 폴더를 비우면 #일반(홈)으로 가므로 막는다.
+    if (url && props()?.scope === "space" && !typed) { notify({ title: "clone 할 작업 폴더를 정해 주세요", body: "작업 폴더 아래 <저장소 이름> 폴더로 받아요", level: "error" }); return; }
     // 사이드바의 새 채널에서 작업 폴더를 비우면 새 채널 대신 #일반 채널에 탭으로 넣는다.
     const toGeneral = props()?.scope === "space" && !typed;
-    const folder = typed ? expand(typed) : toGeneral ? home() : view.defaultFolder;
+    let folder = typed ? expand(typed) : toGeneral ? home() : view.defaultFolder;
+    if (url && !confirmed) {
+      cx.spawn(async (cx2) => {
+        if (!(await fs.exists(folder).catch(() => false))) { notify({ title: "작업 폴더가 없어요", body: folder, level: "error" }); return; }
+        const plan = await clonePlan(folder, url);
+        if (plan.error) notify({ title: "clone 하지 못했어요", body: plan.error, level: "error" });
+        else if (plan.state === "taken") notify({ title: "clone 하지 못했어요", body: `이미 있는 폴더예요: ${tilde(plan.path)}`, level: "error" });
+        else { view.confirm = { ...plan, url }; cx2.notify(); }
+      });
+      return;
+    }
+    view.confirm = null;
     const task = view.taskInput.value().trim();
     const typedName = view.nameInput.value().trim();
     // 새 채널은 이름을 비우면 이름 없이 둔다(브랜치 이름을 따른다). 탭(#일반에 넣는 탭 포함)은 첫 메시지로 이름을 짓는다.
@@ -187,6 +256,7 @@ export function initNewChannel(view, cx) {
     const agent = view.choice ?? TERMINAL;
     const space = spaces().find((s) => s.active);
     view.creating = true;
+    view.cloning = Boolean(url);
     cx.notify();
     cx.spawn(async (cx2) => {
       const ok = await fs.exists(folder).catch(() => false);
@@ -196,11 +266,24 @@ export function initNewChannel(view, cx) {
         cx2.notify();
         return;
       }
+      if (url) {
+        try {
+          folder = await cloneInto(folder, url);
+        } catch (error) {
+          notify({ title: "clone 하지 못했어요", body: String(error?.message ?? error), level: "error" });
+          view.creating = false;
+          view.cloning = false;
+          cx2.notify();
+          return;
+        }
+        view.cloning = false;
+        cx2.notify();
+      }
       const argv = agent.run ? { argv: agent.run, ...(task ? { task } : {}) } : {};
       if (worktree) {
         // 새 worktree: 이름(= 브랜치)으로 만들고 그 폴더를 작업 폴더로 하는 새 채널. 이름은 붙이지 않는다(브랜치를 따른다).
         try {
-          const path = await addWorktree(typed ? folder : view.defaultFolder, branchFromName(typedName));
+          const path = await addWorktree(typed || url ? folder : view.defaultFolder, branchFromName(typedName));
           run("space.new", { folder: path, ...argv });
           closeOverlay(props()?.overlay);
         } catch (error) {
@@ -297,6 +380,23 @@ function worktreeCheck(view, t) {
     .when(on, (el) => el.child(div().min_w(0).truncate().text_size(12).text_color(t.dim).child(`브랜치 ${branchFromName(name)}`)));
 }
 
+// git 링크로 만들 때 뜨는 확인창: 어디에 받는지 보여 주고, 확인하면 clone 하고 채널을 연다.
+function cloneConfirm(view, t, button) {
+  const c = view.confirm;
+  const reuse = c.state === "reuse";
+  return div().id("nc-confirm-layer").absolute().top(0).left(0).size_full().flex().items_center().justify_center().bg("#00000080")
+    .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+    .child(v_flex().id("nc-confirm").w(440).p(20).gap(10).rounded(10).border_1().border_color(t.border).bg(t.popover).shadow_lg()
+      .child(div().text_size(17).font_bold().text_color(strong(t)).child(reuse ? "이미 받아 둔 저장소가 있어요" : "이 경로에 저장소를 받아요"))
+      .child(div().p(10).rounded(6).bg(t.background).border_1().border_color(t.input)
+        .text_size(14).font_bold().text_color(strong(t)).whitespace_normal().child(tilde(c.path)))
+      .child(div().text_size(13).text_color(t.muted).whitespace_normal()
+        .child(reuse ? "clone 하지 않고 이 폴더에서 채널을 열어요." : `${c.url} 을 clone 하고 이 폴더에서 채널을 열어요.`))
+      .child(h_flex().pt(6).gap(8).justify_end()
+        .child(button("nc-confirm-no", "돌아가기", false, (_e, cx) => { view.confirm = null; cx.notify(); }))
+        .child(button("nc-confirm-yes", reuse ? "이 폴더로 열기" : "clone 하고 만들기", true, (_e, cx) => view.create(cx, true)))));
+}
+
 export function renderNewChannel(view, t) {
   const p = props() ?? {};
   const close = () => closeOverlay(p.overlay);
@@ -316,10 +416,10 @@ export function renderNewChannel(view, t) {
   // flex_none: 창보다 내용이 길어져도 입력칸이 눌려 낮아지지 않게.
   const field = (input) => Input.new(input).h(36).flex_none().px(10).rounded(6).border_1().border_color(t.input).bg(t.background)
     .text_size(14).text_color(t.foreground);
-  return v_flex().id("new-channel").size_full().p(20).gap(4).bg(t.popover)
+  return v_flex().id("new-channel").relative().size_full().p(20).gap(4).bg(t.popover)
     .on_key_down((e, cx) => {
       const n = view.dirOpen ? view.dirMatches().length : 0;
-      if (e.key === "escape") { if (n) view.dirOpen = false; else close(); cx.stop_propagation(); cx.notify(); }
+      if (e.key === "escape") { if (view.confirm) view.confirm = null; else if (n) view.dirOpen = false; else close(); cx.stop_propagation(); cx.notify(); }
       else if (n && (e.key === "down" || e.key === "up")) {
         view.dirSel = (view.dirSel + (e.key === "down" ? 1 : n - 1)) % n;
         view.dirScroll.scroll_to_item(view.dirSel);
@@ -337,6 +437,8 @@ export function renderNewChannel(view, t) {
     .child(h_flex().flex_none().gap(8).items_center()
       .child(div().flex_1().min_w(0).child(folderField(view, t, field(view.folderInput))))
       .child(button("pick-folder", "폴더 고르기…", false, (_e, cx) => view.pickFolder(cx)).h(36)))
+    .child(label("git 저장소 링크 (선택)"))
+    .child(field(view.repoInput))
     .child(label(p.scope === "space" ? "채널 이름 (선택)" : "탭 이름 (선택)"))
     .child(field(view.nameInput))
     .when(p.scope === "space", (el) => el.child(worktreeCheck(view, t)))
@@ -345,5 +447,6 @@ export function renderNewChannel(view, t) {
     .child(div().flex_1())
     .child(h_flex().gap(8).justify_end()
       .child(button("nc-cancel", "취소", false, close))
-      .child(button("nc-create", view.creating ? "여는 중…" : "만들기", true, (_e, cx) => view.create(cx))));
+      .child(button("nc-create", view.cloning ? "clone 하는 중…" : view.creating ? "여는 중…" : "만들기", true, (_e, cx) => view.create(cx))))
+    .when(Boolean(view.confirm), (el) => el.child(cloneConfirm(view, t, button)));
 }
