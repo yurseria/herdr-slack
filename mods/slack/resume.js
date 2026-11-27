@@ -5,7 +5,7 @@
 import { terminals, panes, shared, setShared, exec, hc, notify, appHome } from "herdr";
 import * as fs from "fs/promises";
 
-const RECORDS = "slack.resume";       // { [address]: { session, cwd, args, shell, tab, at } }
+const RECORDS = "slack.resume";       // { [address]: { session, kind?, cwd, args, shell, tab, title, at } }
 export const RESUMING = "slack.resuming"; // { [address]: 시작 시각 } (slack-chat 이 "불러오는 중" 을 그린다)
 const RECORD_MS = 15000;
 const GIVE_UP_MS = 45000;
@@ -19,14 +19,20 @@ const VALUE_FLAGS = new Set(["--model", "--permission-mode", "--add-dir", "--set
 
 const what = (term) => `${term?.report?.app ?? ""} ${term?.foreground?.name ?? ""} ${term?.foreground?.argv?.[0] ?? ""}`.toLowerCase();
 const isClaude = (term) => what(term).includes("claude");
-const isAgent = (term) => isClaude(term) || what(term).includes("codex");
+const isCodex = (term) => !isClaude(term) && what(term).includes("codex");
+const isAgent = (term) => isClaude(term) || isCodex(term);
+const UUID = /[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}/i;
+// codex 의 값을 받는 옵션. resume 뒤의 세션 ID·첫 프롬프트와 구분한다.
+const CODEX_VALUE_FLAGS = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox",
+  "-a", "--ask-for-approval", "-C", "--cd", "-i", "--image", "--add-dir", "--enable", "--disable", "--remote"]);
 // 한 번만 읽고 지우는 복구 파일: 기록이 생기기 전에 날아간 탭을 손으로 채울 때 쓴다.
 const SEED = () => `${appHome()}/data/slack/resume-seed.json`;
 const local = (term) => term?.address && !term.address.includes("/");
 const quote = (s) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 
 // claude 다음에 붙었던 옵션만 남긴다. 처음 프롬프트(옵션이 아닌 낱말)는 다시 보내지 않는다.
-export function resumeArgs(argv) {
+export function resumeArgs(argv, kind = "claude") {
+  if (kind === "codex") return codexArgs(argv);
   const out = [];
   const rest = (argv ?? []).slice(1);
   for (let i = 0; i < rest.length; i++) {
@@ -40,7 +46,30 @@ export function resumeArgs(argv) {
   return out;
 }
 
-// 살아 있는 Claude 터미널마다 지금 세션 ID 를 적는다(~/.claude/sessions/<pid>.json).
+// codex 는 -c 가 설정 값이라 따로 본다. resume·세션 ID·프롬프트·--last 는 버린다.
+function codexArgs(argv) {
+  const out = [];
+  const rest = (argv ?? []).slice(1);
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (CODEX_VALUE_FLAGS.has(a)) { if (i + 1 < rest.length) out.push(a, rest[++i]); continue; }
+    if (a === "--last" || a === "--all" || !a.startsWith("-")) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+// codex 세션 ID: "codex resume <id>" 로 떴으면 그 ID, 아니면 제목 끝의 thread-id, 아니면 flockbook 이 본 로그 파일.
+function codexSession(t, feeds) {
+  const argv = t.foreground?.argv ?? [];
+  const at = argv.indexOf("resume");
+  const fromArgv = at > 0 ? argv.slice(at + 1).find((a) => UUID.test(a) && UUID.exec(a)[0] === a) : null;
+  const fromTitle = UUID.exec(t.title?.split(" | ").at(-1)?.trim() ?? "")?.[0];
+  const fromFeed = UUID.exec(feeds?.[t.address]?.path ?? "")?.[0];
+  return (fromArgv ?? fromTitle ?? fromFeed)?.toLowerCase() ?? null;
+}
+
+// 살아 있는 에이전트 터미널마다 지금 세션 ID 를 적는다(claude: ~/.claude/sessions/<pid>.json).
 export function recordSessions(state, cx) {
   if (!state.seedChecked) {
     state.seedChecked = true;
@@ -53,14 +82,19 @@ export function recordSessions(state, cx) {
     });
   }
   if (state.recording || Date.now() - (state.recordedAt ?? 0) < RECORD_MS) return;
-  const live = terminals().filter((t) => t.state === "live" && local(t) && isClaude(t) && t.foreground?.pid);
+  const live = terminals().filter((t) => t.state === "live" && local(t) && isAgent(t) && t.foreground?.pid);
   state.recordedAt = Date.now();
   if (!live.length) return;
   state.recording = true;
   cx.spawn(async () => {
     try {
       const script = 'for p in "$@"; do f="$HOME/.claude/sessions/$p.json"; [ -f "$f" ] && printf "%s\\t%s\\n" "$p" "$(tr -d "\\n" < "$f")"; done';
-      const r = await exec("sh", ["-c", script, "sh", ...live.map((t) => String(t.foreground.pid))]);
+      const claude = live.filter(isClaude);
+      const r = claude.length ? await exec("sh", ["-c", script, "sh", ...claude.map((t) => String(t.foreground.pid))]) : { stdout: "" };
+      let feeds = null;
+      if (live.some(isCodex)) {
+        try { feeds = JSON.parse(await fs.readFile(`${appHome()}/data/slack-chat/flockbook-cache.json`, "utf8")).feeds; } catch {}
+      }
       const ids = new Map();
       for (const line of r.stdout.split("\n")) {
         const [pid, json] = line.split("\t");
@@ -69,12 +103,13 @@ export function recordSessions(state, cx) {
       const records = { ...(shared(RECORDS) ?? {}) };
       let changed = false;
       for (const t of live) {
-        const session = ids.get(String(t.foreground.pid));
+        const kind = isCodex(t) ? "codex" : "claude";
+        const session = kind === "codex" ? codexSession(t, feeds) : ids.get(String(t.foreground.pid));
         if (!session) continue;
-        const next = { session, cwd: t.foreground.cwd ?? t.cwd, args: resumeArgs(t.foreground.argv),
+        const next = { session, ...(kind === "codex" ? { kind } : {}), cwd: t.foreground.cwd ?? t.cwd, args: resumeArgs(t.foreground.argv, kind),
           shell: t.pid, tab: t.labels?.["herdr.tab"] ?? null, title: t.title ?? null };
         const prev = records[t.address];
-        if (prev && prev.session === next.session && prev.shell === next.shell && prev.tab === next.tab
+        if (prev && prev.session === next.session && prev.kind === next.kind && prev.shell === next.shell && prev.tab === next.tab
           && prev.title === next.title && JSON.stringify(prev.args) === JSON.stringify(next.args)) continue;
         records[t.address] = { ...next, at: Date.now() };
         changed = true;

@@ -180,6 +180,7 @@ starts again from the left. It moves only while the agent works and the chat is 
 - Long conversations first show a quick preview from the Flockbook sidecar (about 0.1s), then the
   full view once the log is parsed.
 - A new Codex terminal with no log yet waits for its first message instead of asking to run /status.
+  A Codex started as `codex resume <id>` finds its log by that id.
 
 ## Built from
 
@@ -238,8 +239,10 @@ starts again from the left. It moves only while the agent works and the chat is 
     layout again inside it, so starting a shell can't write back an old copy over the chat page.
   - `panel.js`: the right panel (tab row, terminal shells per channel in shared `slack.panelTerms`,
     width before widening in `slack.panelW`, the big preview window).
-  - `resume.js`: every 15s, records each live Claude terminal's session id
-    (`~/.claude/sessions/<pid>.json`), options, shell pid and title in shared `slack.resume`, and
+  - `resume.js`: every 15s, records each live Claude and Codex terminal's session id (Claude:
+    `~/.claude/sessions/<pid>.json`; Codex: the id after `resume` in its command, else the thread id
+    at the end of its title, else the log the Flockbook sidecar last read), options, shell pid and
+    title in shared `slack.resume`, and
     resumes it after a core restart; shared `slack.resuming` drives the chat's loading text.
   - `demo.js`: demo mode for screenshots. With `data/slack/demo.json`
     (`{"folder": "<home>/herdr-demo", "workspace": "Acme", "profile": "Jamie"}`), only spaces under
@@ -250,7 +253,7 @@ starts again from the left. It moves only while the agent works and the chat is 
   The Slack parts: `look.js` (message rows, date pills, typing line, glow), `threads.js`,
   `flockfeed.js` and `bin/flockbook-modfeed` (Flockbook's sidecar, MIT), `enter.js` (Flockbook's
   `withoutEnter`: drops the line break Enter puts at the cursor before a send), and changes in `main.js`,
-  `parse.js` (message times) and `session.js` (new Codex logs).
+  `parse.js` (message times) and `session.js` (new Codex logs, resumed Codex logs).
 - `mods/slack-chat-file`: the editor and image dialog behind `/memory`, `/config` and file previews
   (from Chat Plus).
 - `mods/slack-toast`: reopens each notification as a `kind: "window"` overlay at the top right of the
@@ -319,6 +322,14 @@ starts again from the left. It moves only while the agent works and the chat is 
 - A Claude you quit with /exit leaves the same shell (same pid), so `resume.js` tells it apart from a
   restart by the shell's pid. `~/.claude/sessions/<pid>.json` is deleted when Claude exits, so a
   session not recorded before the restart can't be found that way.
+- A resumed Codex appends to its old log instead of writing a new one. The chat used to bind a Codex
+  only to a log created after the process started, so a resumed one waited for a log forever
+  ("Waiting for the session log"). `session.js` now reads the id from `codex … resume <id>` first.
+- Claude's `-c` means `--continue` and is dropped on resume; Codex's `-c` is `--config key=value` and
+  is kept with its value, so `resume.js` reads the two commands' options separately.
+- Only Claude and Codex are recorded and resumed. Another agent needs three things checked by really
+  restarting the core: where its live session id can be read, the command that reopens it, and how
+  the chat finds that log afterwards.
 - The sidecar answers relative to its cache file, so two callers must not share one: sharing let the
   activity list's reads cut the chat's first preview down to a few rows.
 - The chat's log reader waits on a folder watch with a 15-second fallback timer. Create that wait

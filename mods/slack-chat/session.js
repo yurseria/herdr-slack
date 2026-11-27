@@ -49,6 +49,17 @@ if identity:
         except Exception: pass
     found = matches[0] if len(matches) == 1 else (None, None)
     emit(file=found[0], sessionId=found[1], evidence="title", matchCount=len(matches), subagent=bool(subagent_hits and not matches))
+# Started as \`codex resume <id>\` (Herdr reopening a conversation after a restart): the log
+# already exists and was written before this process, so look it up by that ID.
+resumed = extra[3] if len(extra) > 3 else None
+if resumed:
+    matches = []
+    for path in root.rglob("rollout-*" + resumed + ".jsonl"):
+        try:
+            meta = read_meta(path)
+            if meta.get("id") == resumed and primary(meta): matches.append(str(path))
+        except Exception: pass
+    if len(matches) == 1: emit(file=matches[0], sessionId=resumed, evidence="resume")
 def norm(s):
     s = re.sub(r"\\x1b\\[[0-?]*[ -/]*[@-~]", "", s)
     return re.sub(r"[\\W_]+", "", s).casefold()
@@ -133,8 +144,26 @@ file = winners[0] if len(winners)==1 and not failed else None
 emit(file=file,evidence="text" if file else "ambiguous")
 `;
 
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const CODEX_VALUE_FLAGS = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox",
+  "-a", "--ask-for-approval", "-C", "--cd", "-i", "--image", "--add-dir", "--enable", "--disable", "--remote"]);
+
+// The session ID in "codex [options] resume [options] <uuid>", or null.
+export function codexResumeId(argv) {
+  if (!Array.isArray(argv) || !/(?:^|[/\\])codex(?:\.exe)?$/.test(argv[0] ?? "")) return null;
+  let resumed = false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i];
+    if (CODEX_VALUE_FLAGS.has(a)) { i++; continue; }
+    if (a.startsWith("-")) continue;
+    if (!resumed) { if (a !== "resume") return null; resumed = true; continue; }
+    return UUID.test(a) ? a.toLowerCase() : null;
+  }
+  return null;
+}
+
 export async function resolveSession(term, screen, hint, previous = null) {
-  const result = await exec("python3", ["-c", SESSION_PY, JSON.stringify([screen, term.foreground?.cwd ?? "", hint, HISTORY_PY, codexTitleIdentity(term), previous, term.foreground?.pid ?? null])], { on: machineOf(term.address), timeout: 30000 });
+  const result = await exec("python3", ["-c", SESSION_PY, JSON.stringify([screen, term.foreground?.cwd ?? "", hint, HISTORY_PY, codexTitleIdentity(term), previous, term.foreground?.pid ?? null, codexResumeId(term.foreground?.argv)])], { on: machineOf(term.address), timeout: 30000 });
   if (result.code !== 0) throw new Error(result.stderr.trim() || "Could not identify the conversation");
   return JSON.parse(result.stdout);
 }
